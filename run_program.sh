@@ -19,4 +19,11 @@ echo "Training starts ..."
 
 cd /home/samben/ismll_work/SRP/goprime/
 
+conda activate ismll
+
+python3 -c 'print("\n~ Testing NVIDIA ~\n")print(os.system("nvidia-smi"))
+print("\n~ Testing TensorFlow ~\n")
+import tensorflow as tf
+print(tf.contrib.eager.num_gpus())'
+
 python3 goprime.py 9 selfplay

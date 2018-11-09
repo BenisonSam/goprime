@@ -7,6 +7,7 @@ This is for generic utilities; see common for Go-specific utility functions.
 """
 
 from __future__ import division
+
 import errno
 import os
 
@@ -74,7 +75,7 @@ def ensure_dir(pathname):
     """Create a directory, unless it already exists."""
     try:
         os.mkdir(pathname)
-    except EnvironmentError, e:
+    except EnvironmentError as e:
         if e.errno != errno.EEXIST:
             raise
 

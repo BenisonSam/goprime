@@ -5,6 +5,8 @@ import random
 import time
 
 import numpy as np
+import tensorflow as tf
+from keras.callbacks import TensorBoard
 from keras.layers import Activation, BatchNormalization, Dense, Flatten, Input
 from keras.layers.convolutional import Conv2D
 from keras.layers.merge import add
@@ -12,6 +14,7 @@ from keras.models import Model
 from keras.optimizers import Adam
 
 import joblib
+from goprime.common import create_batches
 
 
 ############################
@@ -80,7 +83,7 @@ class ResNet(object):
 
 
 class AGZeroModel:
-    def __init__(self, N, batch_size=32, archive_fit_samples=64):
+    def __init__(self, N, batch_size=32, archive_fit_samples=64, log_path='logs/tensorboard'):
         self.N = N
         self.batch_size = batch_size
 
@@ -88,6 +91,9 @@ class AGZeroModel:
         self.position_archive = []
 
         self.model = None
+        self.callback = TensorBoard(log_path)
+        self.__loss_functions = ['categorical_crossentropy', 'binary_crossentropy']
+
         self.model_name = time.strftime('G%y%m%dT%H%M%S')
         print(self.model_name)
 
@@ -114,7 +120,9 @@ class AGZeroModel:
         res = Dense(1, activation='sigmoid', name='result')(res)
 
         self.model = Model(position, [dist, res])
-        self.model.compile(Adam(lr=2e-2), ['categorical_crossentropy', 'binary_crossentropy'])
+        self.model.compile(Adam(lr=2e-2), self.__loss_functions)
+
+        self.callback.set_model(self.model)
 
         self.model.summary()
 
@@ -136,19 +144,45 @@ class AGZeroModel:
         # I'm going to some lengths to avoid the potentially overloaded + operator
         X_fit_samples = list(itertools.chain(X_posres, archive_samples))
         X_shuffled = random.sample(X_fit_samples, len(X_fit_samples))
+        X_shuffled = create_batches(X_shuffled, self.batch_size)
 
+        batch_no = 1
         X, y_dist, y_res = [], [], []
 
-        for pos, dist, res in X_shuffled:
-            X.append(pos)
-            y_dist.append(dist)
-            y_res.append(float(res) / 2 + 0.5)
-            if len(X) % self.batch_size == 0:
-                self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
-                X, y_dist, y_res = [], [], []
+        for batch in X_shuffled:
+            for pos, dist, res in batch:
+                X.append(pos)
+                y_dist.append(dist)
+                y_res.append(float(res) / 2 + 0.5)
 
-        if len(X) > 0:
-            self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
+            logs = self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
+
+            self.write_log(self.__loss_functions, logs, batch_no)
+
+            batch_no += 1
+            X, y_dist, y_res = [], [], []
+
+        # for pos, dist, res in X_shuffled:
+        #     X.append(pos)
+        #     y_dist.append(dist)
+        #     y_res.append(float(res) / 2 + 0.5)
+        #     if len(X) % self.batch_size == 0:
+        #         self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
+        #         X, y_dist, y_res = [], [], []
+        #
+        # if len(X) > 0:
+        #     self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
+
+    def write_log(self, names, logs, batch_no):
+        for name, value in zip(names, logs):
+            summary = tf.Summary()
+
+            summary_value = summary.value.add()
+            summary_value.simple_value = value
+            summary_value.tag = name
+
+            self.callback.writer.add_summary(summary, batch_no)
+            self.callback.writer.flush()
 
     def predict(self, X_positions):
         dist, res = self.model.predict(X_positions)

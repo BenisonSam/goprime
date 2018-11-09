@@ -112,7 +112,8 @@ def tokenise(s, start_position=0):
         group = m.lastgroup
         token = m.group(m.lastindex)
         if group == 'I':
-            token = token.translate(None, _lcchars)
+            # token = token.translate(None, _lcchars)
+            token = token.translate(_lcchars)
         result.append((group, token))
         i = m.end()
         if group == 'D':
@@ -259,7 +260,7 @@ def parse_sgf_collection(s):
     while True:
         try:
             game_tree, position = _parse_sgf_game(s, position)
-        except ValueError, e:
+        except ValueError as e:
             raise ValueError("error parsing game %d: %s" % (len(result), e))
         if game_tree is None:
             break
@@ -320,8 +321,9 @@ def serialise_game_tree(game_tree, wrap=79):
             # Force FF to the front, largely to work around a Quarry bug which
             # makes it ignore the first few bytes of the file.
             for prop_ident, prop_values in sorted(
-                    properties.iteritems(),
-                    key=lambda (ident, _, ): (-(ident == "FF"), ident)):
+                    properties.items(),
+                    # key=lambda (ident, _, ): (-(ident == "FF"), ident)):
+                    key=lambda ident: (-(ident[0] == "FF"), ident[0])):
                 # Make a single string for each property, to get prettier
                 # block_format output.
                 m = [prop_ident]
@@ -456,7 +458,8 @@ def compose(s1, s2):
 
 
 _newline_re = re.compile(r"\n\r|\r\n|\n|\r")
-_whitespace_table = string.maketrans("\t\f\v", "   ")
+# _whitespace_table = string.maketrans("\t\f\v", "   ")
+_whitespace_table = str.maketrans("\t\f\v", "   ")
 _chunk_re = re.compile(r" [^\n\\]+ | [\n\\] ", re.VERBOSE)
 
 

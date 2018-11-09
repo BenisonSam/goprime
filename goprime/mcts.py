@@ -210,7 +210,7 @@ class MCTree:
             score = -score
 
     @staticmethod
-    def tree_search(tree, n, owner_map, disp=False, debug_disp=False):
+    def tree_search(tree, n, owner_map, output_stream=None, debug_disp=False):
         """ Perform MCTS search from a given position for a given #iterations """
         W = int(Board.W)
 
@@ -224,8 +224,8 @@ class MCTree:
             nodes = MCTree.tree_descend(tree, amaf_map, disp=debug_disp)
 
             i += 1
-            if disp and i % REPORT_PERIOD == 0:
-                MCTree.print_tree_summary(tree, i, f=sys.stderr)
+            if output_stream is not None and i % REPORT_PERIOD == 0:
+                MCTree.print_tree_summary(tree, i, f=output_stream)
 
             last_node = nodes[-1]
             if last_node.pos.last is None and last_node.pos.last2 is None:
@@ -235,10 +235,10 @@ class MCTree:
 
             MCTree.tree_update(nodes, amaf_map, score, disp=debug_disp)
 
-        if debug_disp:
-            MCTree.dump_subtree(tree)
-        if disp and i % REPORT_PERIOD != 0:
-            MCTree.print_tree_summary(tree, i, f=sys.stderr)
+        if output_stream is not None:
+            MCTree.dump_subtree(tree, f=output_stream)
+        if output_stream is not None and i % REPORT_PERIOD != 0:
+            MCTree.print_tree_summary(tree, i, f=output_stream)
 
         return tree.best_move(tree.pos.n <= PROPORTIONAL_STAGE)
 
@@ -287,7 +287,7 @@ class MCTree:
         tree.expand()
 
         owner_map = W * W * [0]
-        MCTree.tree_search(tree, N_SIMS, owner_map, disp=disp)
+        MCTree.tree_search(tree, N_SIMS, owner_map, output_stream=sys.stdout if disp else None)
 
         return tree.distribution()
 

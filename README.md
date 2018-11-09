@@ -52,16 +52,16 @@ resume in any mode (e.g. even start gameio or gtp), add the id as a parameter:
 To play, you can e.g. pass the gtp argument and start it in gogui, or let it
 play a bunch of games with GNUGo:
 
-	gogui-1.4.9/bin/gogui-twogtp -black 'python ./Goprime.py gtp G171107T013304_000000150' -white 'gnugo --mode=gtp --chinese-rules --capture-all-dead' -size 7 -komi 7.5 -verbose -auto -alternate -games 20 -sgffile x
+	gogui-1.4.9/bin/gogui-twogtp -black 'python ./Goprime.py 9 gtp G171107T013304_000000150' -white 'gnugo --mode=gtp --chinese-rules --capture-all-dead' -size 7 -komi 7.5 -verbose -auto -alternate -games 20 -sgffile x
 
 GoPrime also supports supervised training:
 
-	while true; do find GoGoD-2008-Winter-Database/ -name '*.sgf' | shuf; done | python ./goprime.py replay_train
+	while true; do find GoGoD-2008-Winter-Database/ -name '*.sgf' | shuf; done | python ./goprime.py 9 replay_train
 
 To mix value supervision with actual MCTS training signal for positional
 output, use smt. like:
 
-	while true; do find GoGoD-2008-Winter-Database/ -name '*.sgf' | shuf; done | python ./goprime.py replay_traindist G171107T224743_R000030000
+	while true; do find GoGoD-2008-Winter-Database/ -name '*.sgf' | shuf; done | python ./goprime.py 9 replay_traindist G171107T224743_R000030000
 
 You can freely switch between selfplay, supervised and supervised+MCTS using
 snapshots, they are compatible.

@@ -59,3 +59,10 @@ def static_class(cls):
         pass
 
     return Wrapper
+
+
+def create_batches(list_obj, batch_size):
+    # For item i in a range that is a length of list_obj,
+    for i in range(0, len(list_obj), batch_size):
+        # Create an index range for list_obj of batch_size items:
+        yield list_obj[i:i + batch_size]

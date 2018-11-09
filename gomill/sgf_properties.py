@@ -217,7 +217,8 @@ def _transcode(s, encoding):
     """Common implementation for interpret_text and interpret_simpletext."""
     # If encoding is UTF-8, we don't need to transcode, but we still want to
     # report an error if it's not properly encoded.
-    u = s.decode(encoding)
+    # u = s.decode(encoding)
+    u = s
     if encoding == "UTF-8":
         return s
     else:
@@ -351,8 +352,10 @@ def interpret_point_list(values, context):
             bottom, right = interpret_point(p2, context)
             if not (bottom <= top and left <= right):
                 raise ValueError
-            for row in xrange(bottom, top + 1):
-                for col in xrange(left, right + 1):
+            # for row in xrange(bottom, top + 1):
+            for row in range(bottom, top + 1):
+                # for col in xrange(left, right + 1):
+                for col in range(left, right + 1):
                     result.add((row, col))
         else:
             pt = interpret_point(p1, context)

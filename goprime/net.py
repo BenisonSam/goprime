@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import itertools
+import os
 import random
 import time
 
@@ -92,6 +93,8 @@ class AGZeroModel:
 
         self.model = None
         self.callback = TensorBoard(log_path)
+        if not os.path.exists(log_path):
+            os.makedirs(log_path)
         self.__loss_functions = ['categorical_crossentropy', 'binary_crossentropy']
 
         self.model_name = time.strftime('G%y%m%dT%H%M%S')

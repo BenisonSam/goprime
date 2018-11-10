@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BSeAlfHPlFay-2
+#SBATCH --job-name=SuperSAM
 #SBATCH --output=Output-%A.out
 #SBATCH --gres=gpu:1
 #SBATCH --mail-type=ALL
@@ -7,7 +7,7 @@
 
 # Never forget that! Strange happenings ensue otherwise.
 #SBATCH --export=NONE
-#SBATCH --partition=stud
+#SBATCH --partition=STUD
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=24:00:00
 
@@ -19,11 +19,10 @@ echo "Training starts ..."
 
 cd /home/samben/ismll_work/SRP/goprime/
 
-conda activate ismll
+/home/samben/anaconda3/envs/ismll/bin/python -c "import os; os.system('nvidia-smi')"
 
-python3 -c 'print("\n~ Testing NVIDIA ~\n")print(os.system("nvidia-smi"))
-print("\n~ Testing TensorFlow ~\n")
-import tensorflow as tf
-print(tf.contrib.eager.num_gpus())'
+srun /home/samben/anaconda3/envs/ismll/bin/python -c "import tensorflow as tf; print(tf.contrib.eager.num_gpus())"
 
-python3 goprime.py 9 selfplay
+srun /home/samben/anaconda3/envs/ismll/bin/python goprime.py 19 selfplay
+
+srun find ../dataset/ -name '*.SGF' | shuf | /home/samben/anaconda3/envs/ismll/bin/python ./goprime.py 19 replay_traindist "B=(0,250)"

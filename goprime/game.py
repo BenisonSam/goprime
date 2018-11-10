@@ -5,7 +5,7 @@ import re
 import sys
 import time
 from itertools import chain
-from multiprocessing import Pool, Process
+from multiprocessing import Process
 
 import numpy as np
 
@@ -177,7 +177,8 @@ class Game:
             print("[{0} out {1}] games completed"
                   .format(games_per_thread * (round + 1), games_per_thread * n_workers * rounds))
 
-    def replay_train(self, net, snapshot_interval=500, continuous_predict=False, batches_per_game=2, disp=True):
+    def replay_train(self, net, snapshot_interval=500, continuous_predict=False, batches_per_game=2,
+                     batch_range=None, disp=True):
 
         N = self.N
 
@@ -186,6 +187,12 @@ class Game:
         # net.stash_size(max(2, 1))  # XXX not all workers will always be busy
 
         for i, f in enumerate(sys.stdin):
+            if batch_range is not None:
+                if i < batch_range[0]:
+                    continue
+                elif i >= batch_range[1]:
+                    break
+
             f = f.rstrip()
             print('[%d] %s' % (i, f))
             sys.stdout.flush()
@@ -197,22 +204,19 @@ class Game:
                 sys.stdout.flush()
                 import traceback
                 traceback.print_exc()
-                # net.server.terminate()
-                # net.server.join()
-                # exit(1)
                 continue
 
             if continuous_predict:
                 # dist = Parallel(n_jobs=n_workers, verbose=100)( # backend="multiprocessing",
                 #     delayed(MCTree.position_dist)(N, net, i, pos, disp) for i, pos in enumerate(positions))
-                with Pool(processes=n_workers) as pool:
-                    dist = pool.map_async(MCTree.position_dist,
-                                          ((N, net, i, pos, disp) for i, pos in enumerate(positions)), chunksize=1)
-                    # pool.close()
-                    # pool.join()
-                dist = dist.get(timeout=None)
-                #     dist = pool.map(MCTree.position_dist, ((N, net, i, pos, disp) for i, pos in enumerate(positions)), 1)
-                # dist = [MCTree.position_dist(N, net, i, pos, disp) for i, pos in enumerate(positions)]
+                # with Pool(processes=n_workers) as pool:
+                #     dist = pool.map_async(MCTree.position_dist,
+                #                           ((N, net, i, pos, disp) for i, pos in enumerate(positions)), chunksize=1)
+                #     # pool.close()
+                #     # pool.join()
+                # dist = dist.get(timeout=None)
+                # dist = pool.map(MCTree.position_dist, ((N, net, i, pos, disp) for i, pos in enumerate(positions)), 1)
+                dist = [MCTree.position_dist(N, net, i, pos, disp) for i, pos in enumerate(positions)]
             else:
                 dist = [MCTree.position_distnext(N, pos) for pos in positions]
 
@@ -237,15 +241,9 @@ class Game:
         snapshot_id = '%s_final' % (net.model_name(),)
         print(snapshot_id)
         net.save(snapshot_id)
-        print("Done!!")
 
-        # TODO To remove this code
-        # i = 0
-        # while True:
-        #     if i >= 100000:
-        #         break
-        #     i += 1
         net.is_model_ready()
+        print("Done!!")
 
     def game_io(self, net, computer_black=False):
         """ A simple minimalistic text mode UI. """

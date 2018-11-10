@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import time
 from multiprocessing import Process, Queue
 from multiprocessing.sharedctypes import Array
@@ -8,6 +9,9 @@ import numpy as np
 
 
 def log(msg):
+    if not os.path.exists("logs/"):
+        os.makedirs("logs/")
+
     # set basic polling config
     logging.basicConfig(
         format="%(message)s",
@@ -17,7 +21,6 @@ def log(msg):
     )
 
     now = datetime.datetime.now()
-
     logging.info("{0}: {1}".format(now.strftime("%Y-%m-%d %H:%M:%S"), msg))
 
 
@@ -108,7 +111,7 @@ class ModelServer(Process):
                     log("Fit {0} completed...".format(fit_counter))
 
                     fit_counter += 1
-                    self.status.value = b'READY'
+                    self.status.value = b'FIT_COMPLETED'
                 elif cmd == 'predict_distribution':
                     stash.add(0, args['X_position'], ri)
                     # log("Predict distribution request completed!")
@@ -123,8 +126,8 @@ class ModelServer(Process):
                     stash.process()
                     snapshot_id = args['snapshot_id']
                     net.save(snapshot_id)
-                    self.status.value = b'READY'
                     log("Model save request completed!")
+                    self.status.value = b'READY'
 
             log("Model Server process completed!")
         except:

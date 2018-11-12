@@ -49,6 +49,7 @@ class ModelServer(Process):
 
             if self.load_snapshot is not None:
                 net.load(self.load_snapshot)
+                log("Snapshot loaded")
 
             log("Neural Network Initialized!")
 

@@ -1,11 +1,12 @@
 import math
 import multiprocessing
+import os
 import random
 import re
 import sys
 import time
 from itertools import chain
-from multiprocessing import Process
+from multiprocessing import Process, Lock
 
 import numpy as np
 
@@ -102,22 +103,6 @@ class Game:
 
         # TODO 90\deg rot
 
-    # def selfplay_singlethread(self, net, worker_id, disp=False, snapshot_interval=1):
-    #     net.ri = worker_id
-    #
-    #     i = 0
-    #     while True:
-    #         print('\n[%d %d] Self-play of game #%d ...\n' % (worker_id, time.time(), i,))
-    #         self.play_and_train(net, i, output_stream=sys.stdout if disp else None)
-    #
-    #         i += 1
-    #         if snapshot_interval and i % snapshot_interval == 0:
-    #             snapshot_id = '%s_%09d' % (net.model_name(), i)
-    #             print(snapshot_id)
-    #             net.save(snapshot_id)
-    #
-    #         if i % 40 == 0: break
-
     def selfplay_singlethread(self, net, worker_id, games):
         net.ri = worker_id
 
@@ -126,24 +111,6 @@ class Game:
             self.play_and_train(net, game, output_stream=open("logs/{0}.log".format(worker_id), "a"))
 
         print("Completed game for worker #{0}".format(worker_id))
-
-    # def selfplay(self, net, disp=True):
-    #     n_workers = multiprocessing.cpu_count() * 8  # 6
-    #
-    #     # group up parallel predict requests
-    #     net.stash_size(max(multiprocessing.cpu_count(), 1))
-    #
-    #     # First process is verbose and snapshots the model
-    #     processes = [Process(target=self.selfplay_singlethread, kwargs=dict(net=net, worker_id=0, disp=disp))]
-    #     # The rest work silently
-    #     for i in range(1, n_workers):
-    #         processes.append(
-    #             Process(target=self.selfplay_singlethread, kwargs=dict(net=net, worker_id=i, snapshot_interval=None)))
-    #
-    #     for p in processes:
-    #         p.start()
-    #     for p in processes:
-    #         p.join()
 
     def selfplay(self, net, games):
         n_workers = multiprocessing.cpu_count() * 1  # 6
@@ -177,8 +144,36 @@ class Game:
             print("[{0} out {1}] games completed"
                   .format(games_per_thread * (round + 1), games_per_thread * n_workers * rounds))
 
-    def replay_train(self, net, snapshot_interval=500, continuous_predict=False, batches_per_game=2,
-                     batch_range=None, disp=True):
+    def replay_train_thread(self, N, net, filename, lock, batches_per_game=2, disp=False):
+        try:
+            print("Processing {0}".format(filename))
+            positions, score = self.gather_positions(filename, subsample=16)
+
+            # TODO to make this purely parallel by maybe making the MCTS code thread safe
+            lock.acquire()
+            try:
+                dist = [MCTree.position_dist(N, net, i, pos, disp) for i, pos in enumerate(positions)]
+            finally:
+                lock.release()
+
+            X_positions = list(zip(positions, dist))
+
+            if disp:
+                Position.print(X_positions[0][0], sys.stdout, None)
+
+            for i in range(batches_per_game):
+                net.fit_game(X_positions, score)
+                # fit flipped positions
+                net.fit_game(X_positions, score, board_transform='flip_vert')
+                net.fit_game(X_positions, score, board_transform='flip_horiz')
+                net.fit_game(X_positions, score, board_transform='flip_both')
+                # TODO 90\deg rot
+        except:
+            import traceback
+            traceback.print_exc()
+            return
+
+    def replay_traindist(self, net, dataset, snapshot_interval=500, batches_per_game=2, batch_range=None, disp=False):
 
         N = self.N
 
@@ -186,14 +181,58 @@ class Game:
         # group up parallel predict requests
         # net.stash_size(max(2, 1))  # XXX not all workers will always be busy
 
-        for i, f in enumerate(sys.stdin):
-            if batch_range is not None:
-                if i < batch_range[0]:
-                    continue
-                elif i >= batch_range[1]:
-                    break
+        if batch_range is not None:
+            sgf_files = os.listdir(dataset)[batch_range[0]: batch_range[1]]
+        else:
+            sgf_files = os.listdir(dataset)
 
-            f = f.rstrip()
+        dataset = [os.path.join(dataset, file) for file in sgf_files]
+        dataset_size = len(dataset)
+
+        i = 0
+        lock = Lock()
+        while i < dataset_size:
+            processes = []
+
+            for j in range(n_workers if dataset_size >= i + n_workers else n_workers - dataset_size + i):
+                processes.append(
+                    Process(target=self.replay_train_thread,
+                            kwargs=dict(N=N, net=net, filename=dataset[i + j], lock=lock,
+                                        batches_per_game=batches_per_game, disp=disp)))
+
+            for p in processes:
+                p.start()
+            for p in processes:
+                p.join()
+
+            if snapshot_interval and i <= snapshot_interval <= i + n_workers:
+                snapshot_id = '%s_R%09d' % (net.model_name(), i)
+                print(snapshot_id)
+                net.save(snapshot_id)
+
+            i += n_workers
+
+        snapshot_id = '%s_final' % (net.model_name(),)
+        print(snapshot_id)
+        net.save(snapshot_id)
+
+        net.is_model_ready()
+        print("Done!!")
+
+    def replay_train(self, net, dataset, snapshot_interval=500, batches_per_game=2, batch_range=None, disp=False):
+
+        N = self.N
+
+        if batch_range is not None:
+            sgf_files = os.listdir(dataset)[batch_range[0]: batch_range[1]]
+        else:
+            sgf_files = os.listdir(dataset)
+
+        dataset = [os.path.join(dataset, file) for file in sgf_files]
+        dataset_size = len(dataset)
+
+        for i in range(dataset_size):
+            f = dataset[i]
             print('[%d] %s' % (i, f))
             sys.stdout.flush()
 
@@ -206,19 +245,7 @@ class Game:
                 traceback.print_exc()
                 continue
 
-            if continuous_predict:
-                # dist = Parallel(n_jobs=n_workers, verbose=100)( # backend="multiprocessing",
-                #     delayed(MCTree.position_dist)(N, net, i, pos, disp) for i, pos in enumerate(positions))
-                # with Pool(processes=n_workers) as pool:
-                #     dist = pool.map_async(MCTree.position_dist,
-                #                           ((N, net, i, pos, disp) for i, pos in enumerate(positions)), chunksize=1)
-                #     # pool.close()
-                #     # pool.join()
-                # dist = dist.get(timeout=None)
-                # dist = pool.map(MCTree.position_dist, ((N, net, i, pos, disp) for i, pos in enumerate(positions)), 1)
-                dist = [MCTree.position_dist(N, net, i, pos, disp) for i, pos in enumerate(positions)]
-            else:
-                dist = [MCTree.position_distnext(N, pos) for pos in positions]
+            dist = [MCTree.position_distnext(N, pos) for pos in positions]
 
             X_positions = list(zip(positions, dist))
 
@@ -244,6 +271,47 @@ class Game:
 
         net.is_model_ready()
         print("Done!!")
+
+    def gather_positions(self, filename, subsample=16):
+        from gomill import sgf
+
+        N = self.N
+        W = self.W
+
+        with open(filename) as f:
+            g = sgf.Sgf_game.from_string(f.read())
+            if g.get_size() != N:
+                raise ValueError('size mismatch')
+            if g.get_handicap() is not None:
+                raise ValueError('handicap game')
+
+            score = 1 if g.get_winner() == 'B' else -1
+
+            pos_to_play = [[], []]  # black-to-play, white-to-play
+            pos = Position.empty_position(N)
+            for node in g.get_main_sequence()[1:]:
+                color, move = node.get_move()
+                if move is not None:
+                    c = (move[0] + 1) * W + move[1] + 1
+                    pos.data['next'] = c
+                    pos = pos.move(c)
+                else:
+                    pos.data['next'] = None
+                    pos = pos.pass_move()
+                if pos is None:
+                    raise ValueError('invalid move %s' % (move,))
+                pos_to_play[pos.n % 2].append(pos)
+            pos.data['next'] = None
+
+        # subsample positions
+        pos_to_play = [random.sample(pos_to_play[0], subsample // 2), random.sample(pos_to_play[1], subsample // 2)]
+
+        # alternate positions and randomly rotate
+        positions = list(chain(*zip(*pos_to_play)))
+
+        flipped = [pos.flip_random() for pos in positions]
+
+        return flipped, score
 
     def game_io(self, net, computer_black=False):
         """ A simple minimalistic text mode UI. """
@@ -398,44 +466,3 @@ class Game:
             else:
                 print('?%s ???\n\n' % (cmdid,), end='')
             sys.stdout.flush()
-
-    def gather_positions(self, filename, subsample=16):
-        from gomill import sgf
-
-        N = self.N
-        W = self.W
-
-        with open(filename) as f:
-            g = sgf.Sgf_game.from_string(f.read())
-            if g.get_size() != N:
-                raise ValueError('size mismatch')
-            if g.get_handicap() is not None:
-                raise ValueError('handicap game')
-
-            score = 1 if g.get_winner() == 'B' else -1
-
-            pos_to_play = [[], []]  # black-to-play, white-to-play
-            pos = Position.empty_position(N)
-            for node in g.get_main_sequence()[1:]:
-                color, move = node.get_move()
-                if move is not None:
-                    c = (move[0] + 1) * W + move[1] + 1
-                    pos.data['next'] = c
-                    pos = pos.move(c)
-                else:
-                    pos.data['next'] = None
-                    pos = pos.pass_move()
-                if pos is None:
-                    raise ValueError('invalid move %s' % (move,))
-                pos_to_play[pos.n % 2].append(pos)
-            pos.data['next'] = None
-
-        # subsample positions
-        pos_to_play = [random.sample(pos_to_play[0], subsample // 2), random.sample(pos_to_play[1], subsample // 2)]
-
-        # alternate positions and randomly rotate
-        positions = list(chain(*zip(*pos_to_play)))
-
-        flipped = [pos.flip_random() for pos in positions]
-
-        return (flipped, score)

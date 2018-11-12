@@ -23,6 +23,6 @@ cd /home/samben/ismll_work/SRP/goprime/
 
 srun /home/samben/anaconda3/envs/ismll/bin/python -c "import tensorflow as tf; print(tf.contrib.eager.num_gpus())"
 
-srun /home/samben/anaconda3/envs/ismll/bin/python goprime.py 19 selfplay
+#srun /home/samben/anaconda3/envs/ismll/bin/python goprime.py -m selfplay
 
-srun find ../dataset/ -name '*.SGF' | shuf | /home/samben/anaconda3/envs/ismll/bin/python ./goprime.py 19 replay_traindist "B=(0,250)"
+srun /home/samben/anaconda3/envs/ismll/bin/python goprime.py -m replay_traindist -b 0,250 -d ../dataset/

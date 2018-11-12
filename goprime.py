@@ -12,27 +12,88 @@ from goprime.model import GoModel
 
 class ConsoleParams(Enum):
     N = 1
-    Option = 2
+    Mode = 2
     Snapshot = 3
+    BatchRange = 4
+    DataSet = 5
 
 
-if __name__ == "__main__" and 1 < len(sys.argv) < 5:
+console_options = ["-n", "-m", "-s", "-b", "-d"]
+options_lookup = {
+    "-n": ConsoleParams.N,
+    "-m": ConsoleParams.Mode,
+    "-s": ConsoleParams.Snapshot,
+    "-b": ConsoleParams.BatchRange,
+    "-d": ConsoleParams.DataSet
+}
+options_type = {
+    "-n": int,
+    "-m": str,
+    "-s": str,
+    "-b": "range",
+    "-d": "path"
+}
 
-    N = int(sys.argv[ConsoleParams.N.value])
+
+def validate_option(option, value):
+    option = str(option).strip()
+    value = str(value).strip()
+
+    if options_type[option] is None:
+        raise NameError("Unknown option: {0}".format(option))
+
+    if options_type[option] == "range":
+        value = tuple([int(val.strip()) for val in value.split(',')])
+    elif options_type[option] == "path":
+        import os
+        if not os.path.exists(value):
+            raise OSError("Path for option {0} doesn't exist".format(option))
+    else:
+        value = options_type[option](value)
+
+    return value
+
+
+def read_console_params():
+    params = sys.argv
+    arg_values = {
+        ConsoleParams.N: 19,
+        ConsoleParams.Mode: "selfplay",
+        ConsoleParams.Snapshot: None,
+        ConsoleParams.BatchRange: None,
+        ConsoleParams.DataSet: None
+    }
+
+    i = 1
+    while True:
+        param = params[i].strip()
+
+        if param in console_options and i + 1 < len(params):
+            value = params[i + 1].strip()
+
+            if value in console_options:
+                raise ValueError("No value found for option {0}.".format(param))
+            else:
+                arg_values[options_lookup[param]] = validate_option(param, value)
+
+        i += 2
+        if i == len(params):
+            break
+
+    return arg_values
+
+
+if __name__ == "__main__":
+
+    params = read_console_params()
+    print(params)
+    # exit(1)
+
+    N = int(params[ConsoleParams.N])
     W = N + 2
 
-    mode = sys.argv[ConsoleParams.Option.value]
-    snapshot = sys.argv[ConsoleParams.Snapshot.value] if len(sys.argv) > 3 else None
-
-    # special conditions for 3rd argument
-    snapshot = snapshot if snapshot is not None and not snapshot.startswith("B=") else None
-
-    batch_range = sys.argv[ConsoleParams.Snapshot.value] if len(sys.argv) > 3 else None
-    batch_range = tuple([int(item) for item in batch_range.strip("B=()").split(',')]) \
-        if batch_range is not None and batch_range.startswith("B=") else None
-    # print(batch_range[0], batch_range[1])
-
-    snapshot = sys.argv[4] if snapshot is None and batch_range is not None and len(sys.argv) > 4 else None
+    mode = params[ConsoleParams.Mode]
+    snapshot = params[ConsoleParams.Snapshot]
 
     game = Game(N)
     net = GoModel(board_size=N, load_snapshot=snapshot)
@@ -65,10 +126,13 @@ if __name__ == "__main__" and 1 < len(sys.argv) < 5:
         elif mode == "selfplay":
             game.selfplay(net, games=32)
         elif mode == "replay_train":
-            # find GoGoD-2008-Winter-Database/ -name '*.sgf' | shuf | python ./goprime.py 19 replay_train
-            game.replay_train(net, batch_range=batch_range, disp=False)
+            dataset = params[ConsoleParams.DataSet]
+            batch_range = params[ConsoleParams.BatchRange]
+            game.replay_train(net, dataset=dataset, batch_range=batch_range, disp=True)
         elif mode == "replay_traindist":
-            game.replay_train(net, continuous_predict=True, batch_range=batch_range)
+            dataset = params[ConsoleParams.DataSet]
+            batch_range = params[ConsoleParams.BatchRange]
+            game.replay_traindist(net, dataset=dataset, batch_range=batch_range, disp=True)
         else:
             print('Unknown action', file=sys.stderr)
 

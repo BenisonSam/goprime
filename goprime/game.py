@@ -6,13 +6,13 @@ import re
 import sys
 import time
 from itertools import chain
-from multiprocessing import Process, Lock
+from multiprocessing import Process
 
 import numpy as np
 
 from goprime import *
 from goprime.board import Position
-from goprime.mcts import MCTree, TreeNode
+from goprime.mcts import TreeNode, tree_search, dump_subtree, position_dist, position_distnext
 
 
 class Game:
@@ -35,7 +35,7 @@ class Game:
         tree.expand()
 
         while True:
-            next_tree = MCTree.tree_search(tree, N_SIMS, owner_map, output_stream=output_stream, debug_disp=False)
+            next_tree = tree_search(tree, N_SIMS, output_stream=output_stream, debug_disp=False)
 
             print("\n1. Calculated tree simulations\n", file=output_stream)
 
@@ -75,7 +75,7 @@ class Game:
                     print('Counted score: B%+.1f' % (count,), file=output_stream)
                 break
 
-            if tree.pos.n > N * N * 2:
+            if tree.pos.n > (N * N * 2 if N < 14 else N * N + N):
                 if output_stream is not None:
                     print('Stopping too long a game.', file=output_stream)
                 score = 0
@@ -86,7 +86,7 @@ class Game:
         # score here is for black to play (player-to-play from empty_position)
         if output_stream is not None:
             print(score, file=output_stream)
-            MCTree.dump_subtree(tree, f=output_stream)
+            dump_subtree(tree, f=output_stream)
 
         for i in range(batches_per_game):
             net.fit_game(positions, score)
@@ -103,20 +103,25 @@ class Game:
 
         # TODO 90\deg rot
 
-    def selfplay_singlethread(self, net, worker_id, games):
+    def selfplay_singlethread(self, net, worker_id, games, log="file"):
         net.ri = worker_id
 
         for game in range(games):
             print('\n[%d %d] Self-play of game #%d ...\n' % (worker_id, time.time(), game,))
-            self.play_and_train(net, game, output_stream=open("logs/{0}.log".format(worker_id), "a"))
+            if log == "file":
+                self.play_and_train(net, game, output_stream=open("logs/{0}.log".format(worker_id), "a"))
+            elif log == "stdout":
+                self.play_and_train(net, game, output_stream=sys.stdout)
+            else:
+                self.play_and_train(net, game, output_stream=None)
 
         print("Completed game for worker #{0}".format(worker_id))
 
-    def selfplay(self, net, games):
-        n_workers = multiprocessing.cpu_count() * 1  # 6
+    def selfplay(self, net, games, log="file"):
+        n_workers = multiprocessing.cpu_count() * 4
 
         # group up parallel predict requests
-        net.stash_size(max(multiprocessing.cpu_count(), 1))
+        net.set_stash_size(max(n_workers, 1))
 
         rounds = 4
         games_per_thread = int(math.ceil(games / (n_workers * rounds)))
@@ -130,10 +135,17 @@ class Game:
             for i in range(0, n_workers):
                 processes.append(
                     Process(target=self.selfplay_singlethread,
-                            kwargs=dict(net=net, worker_id=i, games=games_per_thread)))
+                            kwargs=dict(net=net, worker_id=i, games=games_per_thread, log=log)))
 
             for p in processes:
                 p.start()
+
+            while True:
+                running = any(p.is_alive() for p in processes)
+                if not running:
+                    break
+                time.sleep(1.0)
+
             for p in processes:
                 p.join()
 
@@ -144,40 +156,32 @@ class Game:
             print("[{0} out {1}] games completed"
                   .format(games_per_thread * (round + 1), games_per_thread * n_workers * rounds))
 
-    def replay_train_thread(self, N, net, filename, lock, batches_per_game=2, disp=False):
-        try:
-            print("Processing {0}".format(filename))
-            positions, score = self.gather_positions(filename, subsample=16)
+    def replay_train_thread(self, net, worker_id, file_id, filename, batches_per_game=2, disp=False):
+        print("Processing [{0}]: {1}".format(file_id, filename))
 
-            # TODO to make this purely parallel by maybe making the MCTS code thread safe
-            lock.acquire()
-            try:
-                dist = [MCTree.position_dist(N, net, i, pos, disp) for i, pos in enumerate(positions)]
-            finally:
-                lock.release()
+        net.ri = worker_id
+        positions, score = self.gather_positions(filename, subsample=16)
 
-            X_positions = list(zip(positions, dist))
+        dist = [position_dist(net, worker_id, pos, disp) for i, pos in enumerate(positions)]
+        X_positions = list(zip(positions, dist))
 
-            if disp:
-                Position.print(X_positions[0][0], sys.stdout, None)
+        if disp:
+            Position.print(X_positions[0][0], sys.stdout, None)
 
-            for i in range(batches_per_game):
-                net.fit_game(X_positions, score)
-                # fit flipped positions
-                net.fit_game(X_positions, score, board_transform='flip_vert')
-                net.fit_game(X_positions, score, board_transform='flip_horiz')
-                net.fit_game(X_positions, score, board_transform='flip_both')
-                # TODO 90\deg rot
-        except:
-            import traceback
-            traceback.print_exc()
-            return
+        for i in range(batches_per_game):
+            net.fit_game(X_positions, score)
+            # fit flipped positions
+            net.fit_game(X_positions, score, board_transform='flip_vert')
+            net.fit_game(X_positions, score, board_transform='flip_horiz')
+            net.fit_game(X_positions, score, board_transform='flip_both')
+            # TODO 90\deg rot
 
     def replay_traindist(self, net, dataset, snapshot_interval=500, batches_per_game=2, batch_range=None, disp=False):
 
-        N = self.N
+        # N = self.N
 
-        n_workers = multiprocessing.cpu_count()
+        n_workers = multiprocessing.cpu_count() * 4
+        net.set_stash_size(max(n_workers, 1))
         # group up parallel predict requests
         # net.stash_size(max(2, 1))  # XXX not all workers will always be busy
 
@@ -190,18 +194,24 @@ class Game:
         dataset_size = len(dataset)
 
         i = 0
-        lock = Lock()
         while i < dataset_size:
             processes = []
 
             for j in range(n_workers if dataset_size >= i + n_workers else n_workers - dataset_size + i):
                 processes.append(
                     Process(target=self.replay_train_thread,
-                            kwargs=dict(N=N, net=net, filename=dataset[i + j], lock=lock,
+                            kwargs=dict(net=net, worker_id=j, file_id=i + j, filename=dataset[i + j],
                                         batches_per_game=batches_per_game, disp=disp)))
 
             for p in processes:
                 p.start()
+
+            while True:
+                running = any(p.is_alive() for p in processes)
+                if not running:
+                    break
+                time.sleep(1.0)
+
             for p in processes:
                 p.join()
 
@@ -224,7 +234,10 @@ class Game:
         N = self.N
 
         if batch_range is not None:
-            sgf_files = os.listdir(dataset)[batch_range[0]: batch_range[1]]
+            if batch_range[1] == 0:
+                sgf_files = os.listdir(dataset)[batch_range[0]:]
+            else:
+                sgf_files = os.listdir(dataset)[batch_range[0]: batch_range[1]]
         else:
             sgf_files = os.listdir(dataset)
 
@@ -245,7 +258,7 @@ class Game:
                 traceback.print_exc()
                 continue
 
-            dist = [MCTree.position_distnext(N, pos) for pos in positions]
+            dist = [position_distnext(N, pos) for pos in positions]
 
             X_positions = list(zip(positions, dist))
 
@@ -272,36 +285,40 @@ class Game:
         net.is_model_ready()
         print("Done!!")
 
-    def gather_positions(self, filename, subsample=16):
+    def gather_positions(self, filename, encoding='utf-8', subsample=16):
         from gomill import sgf
 
         N = self.N
         W = self.W
 
-        with open(filename) as f:
-            g = sgf.Sgf_game.from_string(f.read())
-            if g.get_size() != N:
-                raise ValueError('size mismatch')
-            if g.get_handicap() is not None:
-                raise ValueError('handicap game')
+        try:
+            with open(filename, mode='rt', encoding=encoding) as f:
+                g = sgf.Sgf_game.from_string(f.read())
+                if g.get_size() != N:
+                    raise ValueError('size mismatch')
+                if g.get_handicap() is not None:
+                    raise ValueError('handicap game')
 
-            score = 1 if g.get_winner() == 'B' else -1
+                score = 1 if g.get_winner() == 'B' else -1
 
-            pos_to_play = [[], []]  # black-to-play, white-to-play
-            pos = Position.empty_position(N)
-            for node in g.get_main_sequence()[1:]:
-                color, move = node.get_move()
-                if move is not None:
-                    c = (move[0] + 1) * W + move[1] + 1
-                    pos.data['next'] = c
-                    pos = pos.move(c)
-                else:
-                    pos.data['next'] = None
-                    pos = pos.pass_move()
-                if pos is None:
-                    raise ValueError('invalid move %s' % (move,))
-                pos_to_play[pos.n % 2].append(pos)
-            pos.data['next'] = None
+                pos_to_play = [[], []]  # black-to-play, white-to-play
+                pos = Position.empty_position(N)
+                for node in g.get_main_sequence()[1:]:
+                    color, move = node.get_move()
+                    if move is not None:
+                        c = (move[0] + 1) * W + move[1] + 1
+                        pos.data['next'] = c
+                        pos = pos.move(c)
+                    else:
+                        pos.data['next'] = None
+                        pos = pos.pass_move()
+                    if pos is None:
+                        raise ValueError('invalid move %s' % (move,))
+                    pos_to_play[pos.n % 2].append(pos)
+                pos.data['next'] = None
+        except:
+            if encoding == 'utf-8':
+                return self.gather_positions(filename, encoding='latin1', subsample=16)
 
         # subsample positions
         pos_to_play = [random.sample(pos_to_play[0], subsample // 2), random.sample(pos_to_play[1], subsample // 2)]
@@ -351,8 +368,7 @@ class Game:
 
                 Position.print(tree.pos)
 
-            owner_map = W * W * [0]
-            tree = MCTree.tree_search(tree, N_SIMS, owner_map, output_stream=sys.stdout)
+            tree = tree_search(tree, N_SIMS, output_stream=sys.stdout)
             if tree.pos.last is None and tree.pos.last2 is None:
                 score = tree.pos.score()
                 if tree.pos.n % 2:
@@ -424,7 +440,7 @@ class Game:
                     else:
                         tree = TreeNode(net=net, pos=tree.pos.pass_move())
             elif command[0] == "genmove":
-                tree = MCTree.tree_search(tree, N_SIMS, owner_map, output_stream=sys.stdout)
+                tree = tree_search(tree, N_SIMS, output_stream=sys.stdout)
                 if tree.pos.last is None:
                     ret = 'pass'
                 elif float(tree.w) / tree.v < RESIGN_THRES and tree.pos.n > 10:
@@ -446,7 +462,7 @@ class Game:
             elif command[0] == "version":
                 ret = 'simple go program demo'
             elif command[0] == "tsdebug":
-                Position.print(MCTree.tree_search(tree, N_SIMS, W * W * [0], output_stream=sys.stdout))
+                Position.print(tree_search(tree, N_SIMS, output_stream=sys.stdout))
             elif command[0] == "list_commands":
                 ret = '\n'.join(known_commands)
             elif command[0] == "known_command":

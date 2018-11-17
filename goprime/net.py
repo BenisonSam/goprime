@@ -5,6 +5,7 @@ import os
 import random
 import time
 
+import joblib
 import numpy as np
 import tensorflow as tf
 from keras.callbacks import TensorBoard
@@ -14,7 +15,6 @@ from keras.layers.merge import add
 from keras.models import Model
 from keras.optimizers import Adam
 
-import joblib
 from goprime.common import create_batches
 
 
@@ -146,11 +146,18 @@ class AGZeroModel:
 
         # I'm going to some lengths to avoid the potentially overloaded + operator
         X_fit_samples = list(itertools.chain(X_posres, archive_samples))
-        X_shuffled = random.sample(X_fit_samples, len(X_fit_samples))
-        X_shuffled = create_batches(X_shuffled, self.batch_size)
 
+        self.__fit_model(X_fit_samples, self.batch_size)
+
+    def retrain_position_archive(self):
+        self.__fit_model(self.position_archive, self.batch_size * 8)
+
+    def __fit_model(self, X_fit_samples, batch_size):
         batch_no = 1
         X, y_dist, y_res = [], [], []
+
+        X_shuffled = random.sample(X_fit_samples, len(X_fit_samples))
+        X_shuffled = create_batches(X_shuffled, batch_size)
 
         for batch in X_shuffled:
             for pos, dist, res in batch:

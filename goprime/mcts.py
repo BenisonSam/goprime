@@ -121,186 +121,182 @@ class TreeNode:
                 distribution[-1] = p
         return distribution
 
+    def __repr__(self):
+        return str(vars(self)).replace("\\n", '\n')
 
-class MCTree:
 
-    @staticmethod
-    def puct_urgency_input(nodes):
-        w = np.array([float(n.w) for n in nodes])
-        v = np.array([float(n.v) for n in nodes])
-        pw = np.array([float(n.pw) if n.pv > 0 else 1. for n in nodes])
-        pv = np.array([float(n.pv) if n.pv > 0 else 10. for n in nodes])
+def puct_urgency_input(nodes):
+    w = np.array([float(n.w) for n in nodes])
+    v = np.array([float(n.v) for n in nodes])
+    pw = np.array([float(n.pw) if n.pv > 0 else 1. for n in nodes])
+    pv = np.array([float(n.pv) if n.pv > 0 else 10. for n in nodes])
 
-        return w, v, pw, pv
+    return w, v, pw, pv
 
-    @staticmethod
-    def global_puct_urgency(n0, w, v, pw, pv):
-        # Like Node.puct_urgency(), but for all children, more quickly.
-        # Expects numpy arrays (except n0 which is scalar).
-        expectation = (w + PRIOR_EVEN / 2) / (v + PRIOR_EVEN)
-        prior = pw / pv
 
-        return expectation + PUCT_C * prior * math.sqrt(n0) / (1 + v)
+def global_puct_urgency(n0, w, v, pw, pv):
+    # Like Node.puct_urgency(), but for all children, more quickly.
+    # Expects numpy arrays (except n0 which is scalar).
+    expectation = (w + PRIOR_EVEN / 2) / (v + PRIOR_EVEN)
+    prior = pw / pv
 
-    @staticmethod
-    def tree_descend(tree, amaf_map, disp=False):
-        """ Descend through the tree to a leaf """
-        tree.v += 1
-        nodes = [tree]
-        passes = 0
-        root = True
+    return expectation + PUCT_C * prior * math.sqrt(n0) / (1 + v)
 
-        while nodes[-1].children is not None and passes < 2:
-            if disp: Position.print(nodes[-1].pos)
 
-            # Pick the most urgent child
-            children = list(nodes[-1].children)
-            if disp:
-                for c in children:
-                    MCTree.dump_subtree(c, recurse=False)
+def tree_descend(tree, amaf_map, disp=False):
+    """ Descend through the tree to a leaf """
+    tree.v += 1
+    nodes = [tree]
+    passes = 0
+    root = True
 
-            random.shuffle(children)  # randomize the max in case of equal urgency
-            urgencies = MCTree.global_puct_urgency(nodes[-1].v, *MCTree.puct_urgency_input(children))
+    while nodes[-1].children is not None and passes < 2:
+        if disp: Position.print(nodes[-1].pos)
 
-            if root:
-                dirichlet = np.random.dirichlet((0.03, 1), len(children))
-                urgencies = urgencies * 0.75 + dirichlet[:, 0] * 0.25
-                root = False
+        # Pick the most urgent child
+        children = list(nodes[-1].children)
+        if disp:
+            for c in children:
+                dump_subtree(c, recurse=False)
 
-            node = max(zip(children, urgencies), key=lambda t: t[1])[0]
-            nodes.append(node)
+        random.shuffle(children)  # randomize the max in case of equal urgency
+        urgencies = global_puct_urgency(nodes[-1].v, *puct_urgency_input(children))
 
-            if disp: print('chosen %s' % (Position.str_coord(node.pos.last),), file=sys.stderr)
+        if root:
+            dirichlet = np.random.dirichlet((0.03, 1), len(children))
+            urgencies = urgencies * 0.75 + dirichlet[:, 0] * 0.25
+            root = False
 
-            if node.pos.last is None:
-                passes += 1
-            else:
-                passes = 0
-                if amaf_map[node.pos.last] == 0:  # Mark the coordinate with 1 for black
-                    amaf_map[node.pos.last] = 1 if nodes[-2].pos.n % 2 == 0 else -1
+        node = max(zip(children, urgencies), key=lambda t: t[1])[0]
+        nodes.append(node)
 
-            # updating visits on the way *down* represents "virtual loss", relevant for parallelization
-            node.v += 1
-            if node.children is None and node.v > EXPAND_VISITS:
-                node.expand()
+        if disp: print('chosen %s' % (Position.str_coord(node.pos.last),), file=sys.stderr)
 
-        return nodes
+        if node.pos.last is None:
+            passes += 1
+        else:
+            passes = 0
+            if amaf_map[node.pos.last] == 0:  # Mark the coordinate with 1 for black
+                amaf_map[node.pos.last] = 1 if nodes[-2].pos.n % 2 == 0 else -1
 
-    @staticmethod
-    def tree_update(nodes, amaf_map, score, disp=False):
-        """ Store simulation result in the tree (@nodes is the tree path) """
-        for node in reversed(nodes):
-            if disp:  print('updating', Position.str_coord(node.pos.last), score < 0, file=sys.stderr)
-            node.w += score < 0  # score is for to-play, node statistics for just-played
-            # Update the node children AMAF stats with moves we made
-            # with their color
-            amaf_map_value = 1 if node.pos.n % 2 == 0 else -1
+        # updating visits on the way *down* represents "virtual loss", relevant for parallelization
+        node.v += 1
+        if node.children is None and node.v > EXPAND_VISITS:
+            node.expand()
 
-            if node.children is not None:
-                for child in node.children:
-                    if child.pos.last is None:
-                        continue
+    return nodes
 
-                    if amaf_map[child.pos.last] == amaf_map_value:
-                        if disp: print('  AMAF updating', Position.str_coord(child.pos.last), score > 0,
-                                       file=sys.stderr)
-                        child.aw += score > 0  # reversed perspective
-                        child.av += 1
 
-            score = -score
+def tree_update(nodes, amaf_map, score, disp=False):
+    """ Store simulation result in the tree (@nodes is the tree path) """
+    for node in reversed(nodes):
+        if disp:  print('updating', Position.str_coord(node.pos.last), score < 0, file=sys.stderr)
+        node.w += score < 0  # score is for to-play, node statistics for just-played
+        # Update the node children AMAF stats with moves we made
+        # with their color
+        amaf_map_value = 1 if node.pos.n % 2 == 0 else -1
 
-    @staticmethod
-    def tree_search(tree, n, owner_map, output_stream=None, debug_disp=False):
-        """ Perform MCTS search from a given position for a given #iterations """
-        W = int(Board.W)
+        if node.children is not None:
+            for child in node.children:
+                if child.pos.last is None:
+                    continue
 
-        # Initialize root node
-        if tree.children is None:
-            tree.expand()
+                if amaf_map[child.pos.last] == amaf_map_value:
+                    if disp: print('  AMAF updating', Position.str_coord(child.pos.last), score > 0,
+                                   file=sys.stderr)
+                    child.aw += score > 0  # reversed perspective
+                    child.av += 1
 
-        i = 0
-        while i < n:
-            amaf_map = W * W * [0]
-            nodes = MCTree.tree_descend(tree, amaf_map, disp=debug_disp)
+        score = -score
 
-            i += 1
-            if output_stream is not None and i % REPORT_PERIOD == 0:
-                MCTree.print_tree_summary(tree, i, f=output_stream)
 
-            last_node = nodes[-1]
-            if last_node.pos.last is None and last_node.pos.last2 is None:
-                score = 1 if last_node.pos.score() > 0 else -1
-            else:
-                score = tree.net.predict_winrate(last_node.pos)
+def tree_search(tree, n, output_stream=None, debug_disp=False):
+    """ Perform MCTS search from a given position for a given #iterations """
+    W = int(Board.W)
 
-            MCTree.tree_update(nodes, amaf_map, score, disp=debug_disp)
-
-        if output_stream is not None:
-            MCTree.dump_subtree(tree, f=output_stream)
-        if output_stream is not None and i % REPORT_PERIOD != 0:
-            MCTree.print_tree_summary(tree, i, f=output_stream)
-
-        return tree.best_move(tree.pos.n <= PROPORTIONAL_STAGE)
-
-    @staticmethod
-    def dump_subtree(node, thres=N_SIMS / 50, indent=0, f=sys.stderr, recurse=True):
-        """ print this node and all its children with v >= thres. """
-        print("%s+- %s %.3f (%d/%d, prior %d/%d, rave %d/%d=%.3f, pred %.3f)" %
-              (indent * ' ', Position.str_coord(node.pos.last), node.winrate(),
-               node.w, node.v, node.pw, node.pv, node.aw, node.av,
-               float(node.aw) / node.av if node.av > 0 else float('nan'),
-               float(-node.net.predict_winrate(node.pos) + 1) / 2), file=f)
-
-        if not recurse or not node.children:
-            return
-
-        for child in sorted(node.children, key=lambda n: n.v, reverse=True):
-            if child.v >= thres:
-                MCTree.dump_subtree(child, thres=thres, indent=indent + 3, f=f)
-
-    @staticmethod
-    def print_tree_summary(tree, sims, f=sys.stderr):
-        best_nodes = sorted(tree.children, key=lambda n: n.v, reverse=True)[:5]
-        best_seq = []
-        node = tree
-
-        while node is not None:
-            best_seq.append(node.pos.last)
-            node = node.best_move()
-
-        best_predwinrate = float(-tree.net.predict_winrate(best_nodes[0].pos) + 1) / 2
-
-        print('[%4d] winrate %.3f/%.3f | seq %s | can %s' %
-              (sims, best_nodes[0].winrate(), best_predwinrate, ' '
-               .join([Position.str_coord(c) for c in best_seq[1:6]]),
-               ' '.join(['%s(%.3f|%d/%.3f)' % (Position.str_coord(n.pos.last), n.winrate(),
-                                               n.v, n.prior()) for n in best_nodes])), file=f)
-
-    @staticmethod
-    def position_dist(N, net, worker_id, pos, disp=False):
-
-        W = N + 2
-
-        net.ri = worker_id
-
-        tree = TreeNode(net=net, pos=pos)
+    # Initialize root node
+    if tree.children is None:
         tree.expand()
 
-        owner_map = W * W * [0]
-        MCTree.tree_search(tree, N_SIMS, owner_map, output_stream=sys.stdout if disp else None)
+    i = 0
+    while i < n:
+        amaf_map = W * W * [0]
+        nodes = tree_descend(tree, amaf_map, disp=debug_disp)
 
-        return tree.distribution()
+        i += 1
+        if output_stream is not None and i % REPORT_PERIOD == 0:
+            print_tree_summary(tree, i, f=output_stream)
 
-    @staticmethod
-    def position_distnext(N, pos):
-        W = N + 2
-        distribution = np.zeros(N * N + 1)
-
-        c = pos.data['next']
-        if c is not None:
-            x, y = c % W - 1, c // W - 1
-            distribution[y * N + x] = 1
+        last_node = nodes[-1]
+        if last_node.pos.last is None and last_node.pos.last2 is None:
+            score = 1 if last_node.pos.score() > 0 else -1
         else:
-            distribution[-1] = 1
+            score = tree.net.predict_winrate(last_node.pos)
 
-        return distribution
+        tree_update(nodes, amaf_map, score, disp=debug_disp)
+
+    if output_stream is not None:
+        dump_subtree(tree, f=output_stream)
+    if output_stream is not None and i % REPORT_PERIOD != 0:
+        print_tree_summary(tree, i, f=output_stream)
+
+    return tree.best_move(tree.pos.n <= PROPORTIONAL_STAGE)
+
+
+def dump_subtree(node, thres=N_SIMS / 50, indent=0, f=sys.stderr, recurse=True):
+    """ print this node and all its children with v >= thres. """
+    print("%s+- %s %.3f (%d/%d, prior %d/%d, rave %d/%d=%.3f, pred %.3f)" %
+          (indent * ' ', Position.str_coord(node.pos.last), node.winrate(),
+           node.w, node.v, node.pw, node.pv, node.aw, node.av,
+           float(node.aw) / node.av if node.av > 0 else float('nan'),
+           float(-node.net.predict_winrate(node.pos) + 1) / 2), file=f)
+
+    if not recurse or not node.children:
+        return
+
+    for child in sorted(node.children, key=lambda n: n.v, reverse=True):
+        if child.v >= thres:
+            dump_subtree(child, thres=thres, indent=indent + 3, f=f)
+
+
+def print_tree_summary(tree, sims, f=sys.stderr):
+    best_nodes = sorted(tree.children, key=lambda n: n.v, reverse=True)[:5]
+    best_seq = []
+    node = tree
+
+    while node is not None:
+        best_seq.append(node.pos.last)
+        node = node.best_move()
+
+    best_predwinrate = float(-tree.net.predict_winrate(best_nodes[0].pos) + 1) / 2
+
+    print('[%4d] winrate %.3f/%.3f | seq %s | can %s' %
+          (sims, best_nodes[0].winrate(), best_predwinrate, ' '
+           .join([Position.str_coord(c) for c in best_seq[1:6]]),
+           ' '.join(['%s(%.3f|%d/%.3f)' % (Position.str_coord(n.pos.last), n.winrate(),
+                                           n.v, n.prior()) for n in best_nodes])), file=f)
+
+
+def position_dist(net, worker_id, pos, disp=False):
+    net.ri = worker_id
+
+    tree = TreeNode(net=net, pos=pos)
+    tree.expand()
+
+    tree_search(tree, N_SIMS, output_stream=sys.stdout if disp else None)
+
+    return tree.distribution()
+
+
+def position_distnext(N, pos):
+    W = N + 2
+    distribution = np.zeros(N * N + 1)
+
+    c = pos.data['next']
+    if c is not None:
+        x, y = c % W - 1, c // W - 1
+        distribution[y * N + x] = 1
+    else:
+        distribution[-1] = 1
+
+    return distribution

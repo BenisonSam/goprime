@@ -1,13 +1,17 @@
 import multiprocessing
+import os
 import sys
 import time
 from enum import Enum
+from pprint import pprint
 
 from goprime import *
 from goprime.board import Position
 from goprime.game import Game
-from goprime.mcts import MCTree, TreeNode
+from goprime.mcts import TreeNode, tree_search
 from goprime.model import GoModel
+
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
 class ConsoleParams(Enum):
@@ -16,22 +20,25 @@ class ConsoleParams(Enum):
     Snapshot = 3
     BatchRange = 4
     DataSet = 5
+    Games = 6
 
 
-console_options = ["-n", "-m", "-s", "-b", "-d"]
+console_options = ["-n", "-m", "-s", "-b", "-d", "-g"]
 options_lookup = {
     "-n": ConsoleParams.N,
     "-m": ConsoleParams.Mode,
     "-s": ConsoleParams.Snapshot,
     "-b": ConsoleParams.BatchRange,
-    "-d": ConsoleParams.DataSet
+    "-d": ConsoleParams.DataSet,
+    "-g": ConsoleParams.Games
 }
 options_type = {
     "-n": int,
     "-m": str,
     "-s": str,
     "-b": "range",
-    "-d": "path"
+    "-d": "path",
+    "-g": int
 }
 
 
@@ -86,7 +93,7 @@ def read_console_params():
 if __name__ == "__main__":
 
     params = read_console_params()
-    print(params)
+    pprint(params)
     # exit(1)
 
     N = int(params[ConsoleParams.N])
@@ -114,17 +121,18 @@ if __name__ == "__main__":
         elif mode == "tsbenchmark":
             t_start = time.time()
 
-            Position.print(MCTree.tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
-                                              N_SIMS, W * W * [0]).pos)
+            Position.print(tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
+                                       N_SIMS, W * W * [0]).pos)
 
             print('Tree search with %d playouts took %.3fs with %d threads; speed is %.3f playouts/thread/s' %
                   (N_SIMS, time.time() - t_start, multiprocessing.cpu_count(),
                    N_SIMS / ((time.time() - t_start) * multiprocessing.cpu_count())))
         elif mode == "tsdebug":
-            Position.print(MCTree.tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
-                                              N_SIMS, W * W * [0], output_stream=sys.stdout).pos)
+            Position.print(tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
+                                       N_SIMS, output_stream=sys.stdout).pos)
         elif mode == "selfplay":
-            game.selfplay(net, games=32)
+            games = params[ConsoleParams.Games]
+            game.selfplay(net, games=games)
         elif mode == "replay_train":
             dataset = params[ConsoleParams.DataSet]
             batch_range = params[ConsoleParams.BatchRange]
@@ -138,3 +146,9 @@ if __name__ == "__main__":
 
     net.server.terminate()
     net.server.join()
+
+    # TODO File with last file id
+    # TODO Submit next job based on the last id
+    # TODO Write code for self play cum supervised
+    # TODO Elo rating
+    # TODO GTP IO

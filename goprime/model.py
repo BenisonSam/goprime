@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from multiprocessing import Process, Queue
-from multiprocessing.sharedctypes import Array
+from multiprocessing.sharedctypes import Array, Value
 
 import numpy as np
 
@@ -25,7 +25,7 @@ def log(msg):
 
 
 class ModelServer(Process):
-    def __init__(self, board_size, cmd_queue, res_queues, status, load_snapshot=None):
+    def __init__(self, board_size, cmd_queue, res_queues, status, stash_size=1, retrain_after=5e4, load_snapshot=None):
         super(ModelServer, self).__init__()
 
         self.board_size = board_size
@@ -34,7 +34,10 @@ class ModelServer(Process):
         self.load_snapshot = load_snapshot
 
         self.status = status
+        self.stash_size = stash_size
         self.status.value = b'INITIALIZED'
+        self.retrain_after = int(retrain_after)
+
         log("Model Server initialized!")
 
     def run(self):
@@ -75,7 +78,7 @@ class ModelServer(Process):
                         self.res_queues[ri].put(d if kind == 0 else r)
                     self.stash = []
 
-            stash = PredictStash(1, self.res_queues)
+            stash = PredictStash(self.stash_size.value, self.res_queues)
 
             log("Predict Stash Initialized!")
 
@@ -87,17 +90,21 @@ class ModelServer(Process):
 
             while True and not finished:
                 if time.time() - start_time >= 86000:
-                    while not self.cmd_queue.empty():
-                        self.cmd_queue.get()
                     net.save("{0}_last".format(snapshot_id))
                     log("Emergency snapshot saved before program termination!")
-                    finished = True
+
                     # TODO write the code to submit next job here...
+                    finished = True
+                    continue
 
                 cmd, args, ri = self.cmd_queue.get()
+
                 if cmd == 'stash_size':
                     stash.process()
                     stash.trigger = args['stash_size']
+                    self.stash_size.value = args['stash_size']
+                elif cmd == 'stash_process':
+                    stash.process()
                 elif cmd == 'fit_game':
                     self.status.value = b'FIT_STARTED'
                     stash.process()
@@ -113,6 +120,11 @@ class ModelServer(Process):
 
                     fit_counter += 1
                     self.status.value = b'FIT_COMPLETED'
+
+                    if fit_counter % self.retrain_after == 1:
+                        log("Retrain model started...")
+                        net.retrain_position_archive()
+                        log("Retrain model completed...")
                 elif cmd == 'predict_distribution':
                     stash.add(0, args['X_position'], ri)
                     # log("Predict distribution request completed!")
@@ -144,11 +156,12 @@ class GoModel(object):
         self.res_queues = [Queue() for i in range(128)]
 
         self.status = Array('c', 32)
-        self.server = ModelServer(self.board_size, self.cmd_queue, self.res_queues,
-                                  status=self.status, load_snapshot=load_snapshot)
+        self.stash_size = Value('i', 1)
+        self.server = ModelServer(self.board_size, self.cmd_queue, self.res_queues, status=self.status,
+                                  stash_size=self.stash_size, load_snapshot=load_snapshot)
         self.server.start()
 
-        self.ri = 0  # id of process in case of multiple processes, to prevent mixups
+        self.ri = 0  # id of process in case of multiple processes, to prevent mix ups
 
     def is_model_ready(self):
         try:
@@ -162,9 +175,6 @@ class GoModel(object):
             import traceback
             traceback.print_exc()
             return False
-
-    def stash_size(self, stash_size):
-        self.cmd_queue.put(('stash_size', {'stash_size': stash_size}, self.ri))
 
     def encode_position(self, position, board_transform=None):
 
@@ -200,17 +210,40 @@ class GoModel(object):
 
         return np.stack((my_stones, their_stones, edge, last, last2, to_play), axis=-1)
 
+    def process_stash(self):
+        self.cmd_queue.put(('stash_process', {}, self.ri))
+
+    def set_stash_size(self, stash_size):
+        self.stash_size.value = stash_size
+        self.cmd_queue.put(('stash_size', {'stash_size': stash_size}, self.ri))
+
     def fit_game(self, positions, result, board_transform=None):
         X_positions = [(self.encode_position(pos, board_transform=board_transform), dist) for pos, dist in positions]
         self.cmd_queue.put(('fit_game', {'X_positions': X_positions, 'result': result}, self.ri))
 
     def predict_distribution(self, position):
         self.cmd_queue.put(('predict_distribution', {'X_position': self.encode_position(position)}, self.ri))
-        return self.res_queues[self.ri].get()
+
+        try:
+            result = self.res_queues[self.ri].get(timeout=self.stash_size.value * 2)
+        except:
+            print("predict_distribution queue get timed out")
+            self.process_stash()
+            result = self.res_queues[self.ri].get(timeout=self.stash_size.value * 3)
+
+        return result
 
     def predict_winrate(self, position):
         self.cmd_queue.put(('predict_winrate', {'X_position': self.encode_position(position)}, self.ri))
-        return self.res_queues[self.ri].get()
+
+        try:
+            result = self.res_queues[self.ri].get(timeout=self.stash_size.value * 2)
+        except:
+            print("predict_winrate queue get timed out")
+            self.process_stash()
+            result = self.res_queues[self.ri].get(timeout=self.stash_size.value * 3)
+
+        return result
 
     def model_name(self):
         self.cmd_queue.put(('model_name', {}, self.ri))

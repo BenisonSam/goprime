@@ -1,2 +1,2 @@
-GoPrime --- AlphaGo Zero - like Engine (Under development)
-=============================================================
+GoPrime --- AlphaGo Zero - like Engine for the game of Go (Under development)
+================================================================================

@@ -1,15 +1,18 @@
 <component name="ProjectDictionaryState">
   <dictionary name="benisonsam">
     <words>
+      <w>batcher</w>
       <w>crossentropy</w>
       <w>dataset</w>
       <w>disp</w>
       <w>distnext</w>
       <w>gpus</w>
+      <w>joblib</w>
       <w>nvidia</w>
       <w>pythonioencoding</w>
       <w>relu</w>
       <w>selfplay</w>
+      <w>singlethread</w>
       <w>tensorboard</w>
       <w>tensorflow</w>
       <w>traindist</w>

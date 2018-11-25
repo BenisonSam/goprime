@@ -8,7 +8,7 @@ from multiprocessing.sharedctypes import Array, Value
 import numpy as np
 
 
-def log(msg):
+def log(msg, model_name):
     if not os.path.exists("logs/"):
         os.makedirs("logs/")
 
@@ -17,7 +17,7 @@ def log(msg):
         format="%(message)s",
         level=logging.DEBUG,
         # handlers=[logging.StreamHandler(sys.stdout)],
-        filename="logs/ModelServer.logs", filemode="w"
+        filename="logs/ModelServer-{0}.logs".format(model_name), filemode="w"
     )
 
     now = datetime.datetime.now()
@@ -25,9 +25,11 @@ def log(msg):
 
 
 class ModelServer(Process):
-    def __init__(self, board_size, cmd_queue, res_queues, status, stash_size=1, retrain_after=5e4, load_snapshot=None):
+    def __init__(self, board_size, cmd_queue, res_queues, status,
+                 batch_size=32, stash_size=1, retrain_after=5e4, load_snapshot=None):
         super(ModelServer, self).__init__()
 
+        self.model_name = ""
         self.board_size = board_size
         self.cmd_queue = cmd_queue
         self.res_queues = res_queues
@@ -35,10 +37,9 @@ class ModelServer(Process):
 
         self.status = status
         self.stash_size = stash_size
+        self.batch_size = batch_size
         self.status.value = b'INITIALIZED'
         self.retrain_after = int(retrain_after)
-
-        log("Model Server initialized!")
 
     def run(self):
         try:
@@ -47,14 +48,17 @@ class ModelServer(Process):
             N = self.board_size
             start_time = time.time()
 
-            net = AGZeroModel(N)
+            net = AGZeroModel(N, batch_size=self.batch_size)
+            self.model_name = net.model_name
+            log("Model Server initialized!", self.model_name)
+
             net.create()
 
             if self.load_snapshot is not None:
                 net.load(self.load_snapshot)
-                log("Snapshot loaded")
+                log("Snapshot loaded!", self.model_name)
 
-            log("Neural Network Initialized!")
+            log("Neural Network Initialized!", self.model_name)
 
             class PredictStash(object):
                 """ prediction batcher """
@@ -80,7 +84,7 @@ class ModelServer(Process):
 
             stash = PredictStash(self.stash_size.value, self.res_queues)
 
-            log("Predict Stash Initialized!")
+            log("Predict Stash Initialized!", self.model_name)
 
             self.status.value = b'READY'
 
@@ -91,7 +95,7 @@ class ModelServer(Process):
             while True and not finished:
                 if time.time() - start_time >= 86000:
                     net.save("{0}_last".format(snapshot_id))
-                    log("Emergency snapshot saved before program termination!")
+                    log("Emergency snapshot saved before program termination!", self.model_name)
 
                     # TODO write the code to submit next job here...
                     finished = True
@@ -103,28 +107,50 @@ class ModelServer(Process):
                     stash.process()
                     stash.trigger = args['stash_size']
                     self.stash_size.value = args['stash_size']
+                    log("Change stash size request completed!", self.model_name)
                 elif cmd == 'stash_process':
                     stash.process()
+                    log("Process stash request completed!", self.model_name)
                 elif cmd == 'fit_game':
                     self.status.value = b'FIT_STARTED'
                     stash.process()
-                    log("Fit {0} started...".format(fit_counter))
-                    # print('\rFit %d started...' % (fit_counter,), end='')
-                    # sys.stdout.flush()
+                    log("Fit {0} started...".format(fit_counter), self.model_name)
 
                     net.fit_game(**args)
 
-                    # print('\rFit %d completed...' % (fit_counter,), end='')
-                    # sys.stdout.flush()
-                    log("Fit {0} completed...".format(fit_counter))
+                    log("Fit {0} completed...".format(fit_counter), self.model_name)
 
                     fit_counter += 1
                     self.status.value = b'FIT_COMPLETED'
 
-                    if fit_counter % self.retrain_after == 1:
-                        log("Retrain model started...")
-                        net.retrain_position_archive()
-                        log("Retrain model completed...")
+                    if fit_counter != 1 and fit_counter % self.retrain_after == 1:
+                        self.cmd_queue.put(('retrain', {'batch_size': self.batch_size}, 0))
+                elif cmd == 'retrain':
+                    self.status.value = b'RETRAINING'
+                    log("Retrain model started...", self.model_name)
+
+                    if args['batch_size'] is not None:
+                        batch_size = int(args['batch_size'])
+                    else:
+                        batch_size = self.batch_size
+
+                    net.retrain_position_archive(batch_size=batch_size)
+                    if args['snapshot_id'] is not None:
+                        snapshot_id = "{0}_retrained".format(args['snapshot_id'])
+                    else:
+                        snapshot_id = "{0}_retrained".format(snapshot_id)
+
+                    net.save(snapshot_id)
+                    finished = True
+
+                    log("Retrain model completed...", self.model_name)
+                    self.status.value = b'READY'
+                elif cmd == 'reduce_position_archive':
+                    ratio = 0.5
+                    if args['ratio']:
+                        ratio = float(args['ratio'])
+                    net.reduce_position_archive(ratio=ratio)
+                    log("Position Archive reduce request completed!", self.model_name)
                 elif cmd == 'predict_distribution':
                     stash.add(0, args['X_position'], ri)
                     # log("Predict distribution request completed!")
@@ -133,23 +159,23 @@ class ModelServer(Process):
                     # log("Predict win-rate request completed!")
                 elif cmd == 'model_name':
                     self.res_queues[ri].put(net.model_name)
-                    log("Model name request completed!")
+                    log("Model name request completed!", self.model_name)
                 elif cmd == 'save':
                     self.status.value = b'SAVING'
                     stash.process()
                     snapshot_id = args['snapshot_id']
                     net.save(snapshot_id)
-                    log("Model save request completed!")
+                    log("Model save request completed!", self.model_name)
                     self.status.value = b'READY'
 
-            log("Model Server process completed!")
+            log("Model Server process completed!", self.model_name)
         except:
             import traceback
             traceback.print_exc()
 
 
 class GoModel(object):
-    def __init__(self, board_size, load_snapshot=None):
+    def __init__(self, board_size, batch_size=32, load_snapshot=None):
 
         self.board_size = board_size
         self.cmd_queue = Queue()
@@ -158,7 +184,7 @@ class GoModel(object):
         self.status = Array('c', 32)
         self.stash_size = Value('i', 1)
         self.server = ModelServer(self.board_size, self.cmd_queue, self.res_queues, status=self.status,
-                                  stash_size=self.stash_size, load_snapshot=load_snapshot)
+                                  batch_size=batch_size, stash_size=self.stash_size, load_snapshot=load_snapshot)
         self.server.start()
 
         self.ri = 0  # id of process in case of multiple processes, to prevent mix ups
@@ -209,6 +235,12 @@ class GoModel(object):
                 to_play[y, x] = 1
 
         return np.stack((my_stones, their_stones, edge, last, last2, to_play), axis=-1)
+
+    def set_waiting_status(self):
+        self.status.value = b'WAITING'
+
+    def reduce_position_archive(self, ratio=0.5):
+        self.cmd_queue.put(('reduce_position_archive', {'ratio': ratio}, 0))
 
     def process_stash(self):
         self.cmd_queue.put(('stash_process', {}, self.ri))

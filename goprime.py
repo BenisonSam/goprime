@@ -12,6 +12,7 @@ from goprime.mcts import TreeNode, tree_search
 from goprime.model import GoModel
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 
 class ConsoleParams(Enum):
@@ -102,20 +103,24 @@ if __name__ == "__main__":
     mode = params[ConsoleParams.Mode]
     snapshot = params[ConsoleParams.Snapshot]
 
-    game = Game(N)
-    net = GoModel(board_size=N, load_snapshot=snapshot)
+    game = Game(N, elo_k=round(1 / Game.game_limit_factor(N), 4))
+    batch_size = 32
+    net = GoModel(board_size=N, batch_size=batch_size, load_snapshot=snapshot)
 
     if net.is_model_ready():
 
         # game.play_and_train(net, i=1, batches_per_game=2, output_stream=sys.stdout)
+        net.set_waiting_status()
 
-        if mode == "black":
-            # Default action
-            while True:
-                game.game_io(net)
-        elif mode == "white":
-            while True:
-                game.game_io(net=net, computer_black=True)
+        if mode == "play":
+            mode = input("Choose the color of your stone [Black(b) / White(w)]: ").strip()[0].lower()
+            if mode == "b":
+                # Default action
+                while True:
+                    game.game_io(net)
+            else:
+                while True:
+                    game.game_io(net=net, computer_black=True)
         elif mode == "gtp":
             game.gtp_io(net)
         elif mode == "tsbenchmark":
@@ -130,9 +135,18 @@ if __name__ == "__main__":
         elif mode == "tsdebug":
             Position.print(tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
                                        N_SIMS, output_stream=sys.stdout).pos)
+        elif mode == "retrain":
+            net.cmd_queue.put(('retrain', {'snapshot_id': snapshot, 'batch_size': batch_size}, 0))
+            if net.is_model_ready():
+                pass
         elif mode == "selfplay":
-            games = params[ConsoleParams.Games]
-            game.selfplay(net, games=games)
+            if ConsoleParams.Games in params:
+                games = params[ConsoleParams.Games]
+                game.selfplay(net, games=games)
+            else:
+                game.selfplay(net)
+        elif mode == "target_selfplay":
+            game.selfplay_till_elo(net)
         elif mode == "replay_train":
             dataset = params[ConsoleParams.DataSet]
             batch_range = params[ConsoleParams.BatchRange]

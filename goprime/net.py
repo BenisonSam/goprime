@@ -97,7 +97,7 @@ class AGZeroModel:
             os.makedirs(log_path)
         self.__loss_functions = ['categorical_crossentropy', 'binary_crossentropy']
 
-        self.model_name = time.strftime('G%y%m%dT%H%M%S')
+        self.model_name = time.strftime('GM{0}-%y%m%dT%H%M%S').format('%02d' % N)
         print(self.model_name)
 
     def create(self):
@@ -149,8 +149,14 @@ class AGZeroModel:
 
         self.__fit_model(X_fit_samples, self.batch_size)
 
-    def retrain_position_archive(self):
-        self.__fit_model(self.position_archive, self.batch_size * 8)
+    def retrain_position_archive(self, batch_size=None):
+        self.__fit_model(self.position_archive, batch_size if batch_size else self.batch_size * 8)
+
+    def reduce_position_archive(self, ratio=0.5):
+        try:
+            self.position_archive = random.sample(self.position_archive, int(len(self.position_archive) * ratio))
+        except:
+            pass
 
     def __fit_model(self, X_fit_samples, batch_size):
         batch_no = 1
@@ -210,4 +216,4 @@ class AGZeroModel:
         try:
             self.position_archive = joblib.load(pos_fname)
         except:
-            print('Warning: Cannot load position archive %s' % (pos_fname,))
+            print('Warning: Could not load position archive %s' % (pos_fname,))

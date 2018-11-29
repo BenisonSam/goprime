@@ -111,7 +111,7 @@ class Game:
         net.ri = worker_id
 
         if log == "file":
-            output_stream = open("logs/{0}.log".format(worker_id), "a")
+            output_stream = open("logs/{0}_{1}.log".format(net.server.model_name, worker_id), "a")
         elif log == "stdout":
             output_stream = sys.stdout
         else:
@@ -123,9 +123,9 @@ class Game:
         white = elo_rating["white"][0]
 
         for game in range(games):
-            print('\n[%d %d] Self-play of game #%d ...\n' % (worker_id, time.time(), game,), file=output_stream)
+            print('[%d %d] Self-play of game #%d ...' % (worker_id, time.time(), game,), file=output_stream)
 
-            score = self.play_and_train(net, game, output_stream=output_stream)[0]
+            score = self.play_and_train(net, game, batches_per_game=games - game, output_stream=output_stream)[0]
 
             belo = Elo()
             result = 'WIN' if score > 0 else ('LOST' if score < 0 else 'DRAW')
@@ -199,8 +199,8 @@ class Game:
 
     def selfplay_till_elo(self, net, elo=2000, log="file"):
         model_name = net.model_name()
-        n_workers = multiprocessing.cpu_count() * 4
-        games_per_thread = 32
+        games_per_thread = 8
+        n_workers = multiprocessing.cpu_count() * games_per_thread
 
         # group up parallel predict requests
         stash_size = max(n_workers, 1)
@@ -288,12 +288,24 @@ class Game:
                 for the_file in os.listdir(weights_dir):
                     file_path = os.path.join(weights_dir, the_file)
                     try:
-                        if os.path.isfile(file_path):
+                        if os.path.isfile(file_path) and model_name in file_path:
                             os.unlink(file_path)
                     except Exception as e:
                         print(e)
 
             model_elo_ratings.append(model_elo_rating)
+            if os.path.isfile(target_selfplay_dat):
+                with open(target_selfplay_dat) as f:
+                    lines = f.readlines()
+                if len(lines) >= 2:
+                    if float(lines[0]) < model_elo_rating:
+                        model_elo_rating = float(lines[0])
+                        ratings = [float(rate.strip()) for rate in lines[1].strip("[]").split(",")]
+                        ratings.append(model_elo_ratings[-1])
+                        model_elo_ratings = ratings
+                        if model_elo_rating > min(model_elo_ratings):
+                            model_elo_rating = min(model_elo_ratings)
+
             with open(target_selfplay_dat, "w") as f:
                 f.write("{0}\n{1}".format(model_elo_rating, model_elo_ratings))
 

@@ -8,12 +8,13 @@ import time
 import joblib
 import numpy as np
 import tensorflow as tf
-from keras.callbacks import TensorBoard
-from keras.layers import Activation, BatchNormalization, Dense, Flatten, Input
-from keras.layers.convolutional import Conv2D
-from keras.layers.merge import add
-from keras.models import Model
-from keras.optimizers import Adam
+from tensorflow.contrib.cluster_resolver import TPUClusterResolver
+from tensorflow.keras.callbacks import TensorBoard
+from tensorflow.keras.layers import Activation, BatchNormalization, Conv2D, Dense, Flatten, Input
+# from tensorflow.keras.layers.merge import add
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.python.keras.layers import add
 
 from goprime.common import create_batches
 
@@ -84,17 +85,29 @@ class ResNet(object):
 
 
 class AGZeroModel:
-    def __init__(self, N, batch_size=32, archive_fit_samples=64, log_path='logs/tensorboard'):
+    def __init__(self, N, batch_size=32, archive_fit_samples=64, use_tpu=None, log_path='logs/tensorboard'):
         self.N = N
         self.batch_size = batch_size
 
+        self.model = None
         self.archive_fit_samples = archive_fit_samples
         self.position_archive = []
 
-        self.model = None
+        self.tpu_grpc_url = use_tpu
+        tpu_name_environ_key = 'TPU_NAME'
+
+        # Check has server got TPU
+        if use_tpu is not False and tpu_name_environ_key in os.environ:
+            tpu_name = os.environ[tpu_name_environ_key].strip()
+            if tpu_name != "":
+                self.is_tpu = True
+                self.tpu_grpc_url = TPUClusterResolver(tpu=[os.environ[tpu_name_environ_key]]).get_master()
+        # TODO write an if condition to validate and resolve the TPU url provided
+
         self.callback = TensorBoard(log_path)
         if not os.path.exists(log_path):
             os.makedirs(log_path)
+
         self.__loss_functions = ['categorical_crossentropy', 'binary_crossentropy']
 
         self.model_name = time.strftime('GM{0}-%y%m%dT%H%M%S').format('%02d' % N)
@@ -128,6 +141,20 @@ class AGZeroModel:
         self.callback.set_model(self.model)
 
         self.model.summary()
+
+        # check if TPU available
+        if self.tpu_grpc_url is not None:
+            tpu_model = tf.contrib.tpu.keras_to_tpu_model(
+                self.model,
+                strategy=tf.contrib.tpu.TPUDistributionStrategy(
+                    tf.contrib.cluster_resolver.TPUClusterResolver(tpu=self.tpu_grpc_url)
+                )
+            )
+            tpu_model.compile(
+                optimizer=tf.train.AdamOptimizer(learning_rate=2e-2),
+                loss=self.__loss_functions
+            )
+            self.model = tpu_model
 
     def fit_game(self, X_positions, result):
         X_posres = []
@@ -217,3 +244,20 @@ class AGZeroModel:
             self.position_archive = joblib.load(pos_fname)
         except:
             print('Warning: Could not load position archive %s' % (pos_fname,))
+
+    def load_averaged(self, weights):
+        new_weights = []
+        loaded_weights = []
+
+        for weight in weights:
+            self.model.load_weights(weight)
+            loaded_weights.append(self.model.get_weights())
+            print("Read weight: {0}".format(weight))
+
+        if len(loaded_weights) > 0:
+            for weights_list_tuple in zip(*loaded_weights):
+                new_weights.append([np.array(weights_).mean(axis=0) for weights_ in zip(*weights_list_tuple)])
+
+            self.model.set_weights(new_weights)
+        else:
+            print("No weights to load. Initializing the model with random weights!")

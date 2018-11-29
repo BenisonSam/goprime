@@ -55,7 +55,10 @@ class ModelServer(Process):
             net.create()
 
             if self.load_snapshot is not None:
-                net.load(self.load_snapshot)
+                if isinstance(self.load_snapshot, list):
+                    net.load_averaged(self.load_snapshot)
+                else:
+                    net.load(self.load_snapshot)
                 log("Snapshot loaded!", self.model_name)
 
             log("Neural Network Initialized!", self.model_name)
@@ -90,7 +93,7 @@ class ModelServer(Process):
 
             fit_counter = 0
             finished = False
-            snapshot_id = "First Save ({0})".format(start_time)
+            snapshot_id = "weights/{0}_FS".format(self.model_name)
 
             while True and not finished:
                 if time.time() - start_time >= 86000:
@@ -135,7 +138,7 @@ class ModelServer(Process):
                         batch_size = self.batch_size
 
                     net.retrain_position_archive(batch_size=batch_size)
-                    if args['snapshot_id'] is not None:
+                    if 'snapshot_id' in args:
                         snapshot_id = "{0}_retrained".format(args['snapshot_id'])
                     else:
                         snapshot_id = "{0}_retrained".format(snapshot_id)

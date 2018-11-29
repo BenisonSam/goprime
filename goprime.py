@@ -100,17 +100,26 @@ if __name__ == "__main__":
     N = int(params[ConsoleParams.N])
     W = N + 2
 
-    mode = params[ConsoleParams.Mode]
     snapshot = params[ConsoleParams.Snapshot]
+    # weighted average initialization
+    if snapshot is not None and snapshot.startswith('~'):
+        dir_path = snapshot.strip('~ /')
+        snapshot = []
 
-    game = Game(N, elo_k=round(1 / Game.game_limit_factor(N), 4))
+        for item in os.listdir(dir_path):
+            w_snap = os.path.join(dir_path, item)
+            if os.path.isfile(w_snap) and w_snap.endswith(".h5"):
+                snapshot.append(w_snap)
+
     batch_size = 32
     net = GoModel(board_size=N, batch_size=batch_size, load_snapshot=snapshot)
 
     if net.is_model_ready():
 
-        # game.play_and_train(net, i=1, batches_per_game=2, output_stream=sys.stdout)
         net.set_waiting_status()
+
+        mode = params[ConsoleParams.Mode]
+        game = Game(N, elo_k=round(1 / Game.game_limit_factor(N), 4))
 
         if mode == "play":
             mode = input("Choose the color of your stone [Black(b) / White(w)]: ").strip()[0].lower()
@@ -146,7 +155,7 @@ if __name__ == "__main__":
             else:
                 game.selfplay(net)
         elif mode == "target_selfplay":
-            game.selfplay_till_elo(net)
+            game.selfplay_till_elo(net, log="file")
         elif mode == "replay_train":
             dataset = params[ConsoleParams.DataSet]
             batch_range = params[ConsoleParams.BatchRange]

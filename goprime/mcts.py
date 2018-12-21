@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from goprime import *
+from goprime import Constants
 from goprime.board import *
 
 
@@ -43,8 +43,8 @@ class TreeNode:
             x, y = c % W - 1, c // W - 1
             value = distribution[y * N + x]
 
-            node.pv = PRIOR_NET
-            node.pw = PRIOR_NET * value
+            node.pv = Constants.PRIOR_NET
+            node.pw = Constants.PRIOR_NET * value
 
         # Add also a pass move - but only if this doesn't trigger a losing
         # scoring (or we have no other option)
@@ -56,19 +56,19 @@ class TreeNode:
         if can_pass:
             node = TreeNode(self.net, self.pos.pass_move())
             self.children.append(node)
-            node.pv = PRIOR_NET
-            node.pw = PRIOR_NET * distribution[-1]
+            node.pv = Constants.PRIOR_NET
+            node.pw = Constants.PRIOR_NET * distribution[-1]
 
     def puct_urgency(self, n0):
         # XXX: This is substituted by global_puct_urgency()
-        expectation = float(self.w + PRIOR_EVEN / 2) / (self.v + PRIOR_EVEN)
+        expectation = float(self.w + Constants.PRIOR_EVEN / 2) / (self.v + Constants.PRIOR_EVEN)
 
         try:
             prior = float(self.pw) / self.pv
         except:
             prior = 0.1  # XXX
 
-        return expectation + PUCT_C * prior * math.sqrt(n0) / (1 + self.v)
+        return expectation + Constants.PUCT_C * prior * math.sqrt(n0) / (1 + self.v)
 
     def rave_urgency(self):
         v = self.v + self.pv
@@ -78,7 +78,7 @@ class TreeNode:
             return expectation
 
         rave_expectation = float(self.aw) / self.av
-        beta = self.av / (self.av + v + float(v) * self.av / RAVE_EQUIV)
+        beta = self.av / (self.av + v + float(v) * self.av / Constants.RAVE_EQUIV)
 
         return beta * rave_expectation + (1 - beta) * expectation
 
@@ -94,7 +94,7 @@ class TreeNode:
             return None
 
         if proportional:
-            probs = [(float(node.v) / self.v) ** TEMPERATURE for node in self.children]
+            probs = [(float(node.v) / self.v) ** Constants.TEMPERATURE for node in self.children]
             probs_tot = sum(probs)
             probs = [p / probs_tot for p in probs]
             # print([(Position.str_coord(n.pos.last), p, p * probs_tot) for n, p in zip(self.children, probs)])
@@ -137,10 +137,10 @@ def puct_urgency_input(nodes):
 def global_puct_urgency(n0, w, v, pw, pv):
     # Like Node.puct_urgency(), but for all children, more quickly.
     # Expects numpy arrays (except n0 which is scalar).
-    expectation = (w + PRIOR_EVEN / 2) / (v + PRIOR_EVEN)
+    expectation = (w + Constants.PRIOR_EVEN / 2) / (v + Constants.PRIOR_EVEN)
     prior = pw / pv
 
-    return expectation + PUCT_C * prior * math.sqrt(n0) / (1 + v)
+    return expectation + Constants.PUCT_C * prior * math.sqrt(n0) / (1 + v)
 
 
 def tree_descend(tree, amaf_map, disp=False):
@@ -181,7 +181,7 @@ def tree_descend(tree, amaf_map, disp=False):
 
         # updating visits on the way *down* represents "virtual loss", relevant for parallelization
         node.v += 1
-        if node.children is None and node.v > EXPAND_VISITS:
+        if node.children is None and node.v > Constants.EXPAND_VISITS:
             node.expand()
 
     return nodes
@@ -224,7 +224,7 @@ def tree_search(tree, n, output_stream=None, debug_disp=False):
         nodes = tree_descend(tree, amaf_map, disp=debug_disp)
 
         i += 1
-        if output_stream is not None and i % REPORT_PERIOD == 0:
+        if output_stream is not None and i % Constants.REPORT_PERIOD == 0:
             print_tree_summary(tree, i, f=output_stream)
 
         last_node = nodes[-1]
@@ -237,13 +237,13 @@ def tree_search(tree, n, output_stream=None, debug_disp=False):
 
     if output_stream is not None:
         dump_subtree(tree, f=output_stream)
-    if output_stream is not None and i % REPORT_PERIOD != 0:
+    if output_stream is not None and i % Constants.REPORT_PERIOD != 0:
         print_tree_summary(tree, i, f=output_stream)
 
-    return tree.best_move(tree.pos.n <= PROPORTIONAL_STAGE)
+    return tree.best_move(tree.pos.n <= Constants.PROPORTIONAL_STAGE)
 
 
-def dump_subtree(node, thres=N_SIMS / 50, indent=0, f=sys.stderr, recurse=True):
+def dump_subtree(node, thres=Constants.N_SIMS / 50, indent=0, f=sys.stderr, recurse=True):
     """ print this node and all its children with v >= thres. """
     print("%s+- %s %.3f (%d/%d, prior %d/%d, rave %d/%d=%.3f, pred %.3f)" %
           (indent * ' ', Position.str_coord(node.pos.last), node.winrate(),
@@ -283,7 +283,7 @@ def position_dist(net, worker_id, pos, disp=False):
     tree = TreeNode(net=net, pos=pos)
     tree.expand()
 
-    tree_search(tree, N_SIMS, output_stream=sys.stdout if disp else None)
+    tree_search(tree, Constants.N_SIMS, output_stream=sys.stdout if disp else None)
 
     return tree.distribution()
 

@@ -5,16 +5,17 @@ import random
 import re
 import sys
 import time
+import traceback
 from itertools import chain
 from multiprocessing import Process, Manager
 from shutil import copyfile
 
 import numpy as np
 
-from goprime import *
+from goprime import Constants
 from goprime.board import Position
 from goprime.elo import Elo
-from goprime.log import TBLogger
+from goprime.log import TBLogger, Log
 from goprime.mcts import TreeNode, tree_search, dump_subtree, position_dist, position_distnext
 
 
@@ -38,13 +39,13 @@ class Game:
         positions = []
         owner_map = W * W * [0]
 
-        allow_resign = i > 10 and np.random.rand() < P_ALLOW_RESIGN
+        allow_resign = i > 10 and np.random.rand() < Constants.P_ALLOW_RESIGN
 
         tree = TreeNode(net=net, pos=Position.empty_position(N))
         tree.expand()
 
         while True:
-            next_tree = tree_search(tree, N_SIMS, output_stream=output_stream, debug_disp=False)
+            next_tree = tree_search(tree, Constants.N_SIMS, output_stream=output_stream, debug_disp=False)
 
             positions.append((tree.pos, tree.distribution()))
 
@@ -66,7 +67,8 @@ class Game:
                     print('Counted score: B%+.1f' % (count,), file=output_stream)
                 break
 
-            if allow_resign and float(tree.w) / tree.v < RESIGN_THRES and tree.v > N_SIMS / 10 and tree.pos.n > 10:
+            if allow_resign and float(
+                    tree.w) / tree.v < Constants.RESIGN_THRES and tree.v > Constants.N_SIMS / 10 and tree.pos.n > 10:
                 score = 1  # win for player to-play from this position
                 if tree.pos.n % 2:
                     score = -score
@@ -109,9 +111,10 @@ class Game:
 
     def selfplay_singlethread(self, net, worker_id, elo_rating, games, elo_logger, log="file"):
         net.ri = worker_id
+        model_name = net.model_name()
 
         if log == "file":
-            output_stream = open("logs/{0}_{1}.log".format(net.server.model_name, worker_id), "a")
+            output_stream = open("logs/{0}_{1}.log".format(model_name, worker_id), "a")
         elif log == "stdout":
             output_stream = sys.stdout
         else:
@@ -124,6 +127,7 @@ class Game:
 
         for game in range(games):
             print('[%d %d] Self-play of game #%d ...' % (worker_id, time.time(), game,), file=output_stream)
+            print('[%d %d] Self-play of game #%d ...' % (worker_id, time.time(), game,))
 
             score = self.play_and_train(net, game, batches_per_game=games - game, output_stream=output_stream)[0]
 
@@ -139,8 +143,8 @@ class Game:
             white = welo.get_final_elo_ratings(k=self.K)[0]
             elo_rating["white"] += [white]
 
-            # elo_logger.log_scalar(tag="Black", value=black, step=None)
-            # elo_logger.log_scalar(tag="White", value=white, step=None)
+            elo_logger.log(log=Log.Scalar, session_id=model_name, tag="Black", value=black)
+            elo_logger.log(log=Log.Scalar, session_id=model_name, tag="White", value=white)
 
         print("Elo rating: {0}".format(elo_rating), file=output_stream)
         print("Completed game for worker #{0}".format(worker_id))
@@ -197,10 +201,10 @@ class Game:
             print("[{0} out {1}] games completed"
                   .format(games_per_thread * (round + 1), games_per_thread * n_workers * rounds))
 
-    def selfplay_till_elo(self, net, elo=2000, log="file"):
+    def selfplay_till_elo(self, net, elo=2000, games_per_thread=2, log="file"):
         model_name = net.model_name()
-        games_per_thread = 8
         n_workers = multiprocessing.cpu_count() * games_per_thread
+        self.K = self.K * n_workers
 
         # group up parallel predict requests
         stash_size = max(n_workers, 1)
@@ -222,6 +226,8 @@ class Game:
             if len(lines) >= 2:
                 model_elo_rating = float(lines[0])
                 model_elo_ratings = [float(rate.strip()) for rate in lines[1].strip("[]").split(",")]
+                if model_elo_rating < max(model_elo_ratings):
+                    model_elo_rating = max(model_elo_ratings)
 
         elo_rating["black"] = [model_elo_rating]
         elo_rating["white"] = [model_elo_rating]
@@ -263,36 +269,12 @@ class Game:
             elo_rating["white"] = [max(elo_rating["white"][1:])]
             model_elo_rating = max(elo_rating["black"][0], elo_rating["white"][0])
 
+            # save the snapshot
             snapshot_id = '%s/%s_%09d' % (weights_dir, model_name, iter_round)
             net.save(snapshot_id)
             print("Saved {0}".format(snapshot_id))
 
-            if iter_round % 5 == 0:
-                net.reduce_position_archive()
-
-                elo_rating["black"] = [model_elo_rating]
-                elo_rating["white"] = [model_elo_rating]
-
-                # making sure the file is created
-                while not os.path.isfile('%s.weights.h5' % snapshot_id) \
-                        or not os.path.isfile('%s.archive.joblib' % snapshot_id):
-                    print("Weights not saved yet!")
-                    time.sleep(1.0)
-                    continue
-
-                copyfile('%s.weights.h5' % snapshot_id,
-                         '%s/incremental/%s_%09d.weights.h5' % (weights_dir, model_name, iter_round))
-                copyfile('%s.archive.joblib' % snapshot_id,
-                         '%s/incremental/%s_%09d.archive.joblib' % (weights_dir, model_name, iter_round))
-
-                for the_file in os.listdir(weights_dir):
-                    file_path = os.path.join(weights_dir, the_file)
-                    try:
-                        if os.path.isfile(file_path) and model_name in file_path:
-                            os.unlink(file_path)
-                    except Exception as e:
-                        print(e)
-
+            # get the max elo from all jobs
             model_elo_ratings.append(model_elo_rating)
             if os.path.isfile(target_selfplay_dat):
                 with open(target_selfplay_dat) as f:
@@ -303,11 +285,50 @@ class Game:
                         ratings = [float(rate.strip()) for rate in lines[1].strip("[]").split(",")]
                         ratings.append(model_elo_ratings[-1])
                         model_elo_ratings = ratings
-                        if model_elo_rating > min(model_elo_ratings):
-                            model_elo_rating = min(model_elo_ratings)
+                        if model_elo_rating < max(model_elo_ratings):
+                            model_elo_rating = max(model_elo_ratings)
 
+            # save elo rating to file
+            time.sleep(1.0)
             with open(target_selfplay_dat, "w") as f:
                 f.write("{0}\n{1}".format(model_elo_rating, model_elo_ratings))
+
+            # reduce the position archive (to save memory)
+            # try:
+            #     if iter_round % (19 - self.N - games_per_thread) == 0:
+            #         net.reduce_position_archive()
+            #     else:
+            #         net.reduce_position_archive(ratio=0.7)
+            # except:
+            #     traceback.print_exc()
+
+            # checkpoint iteration - sync elos and remove incremental weights
+            if iter_round != 0 and iter_round % self.N == 0:
+
+                elo_rating["black"] = [model_elo_rating]
+                elo_rating["white"] = [model_elo_rating]
+
+                # making sure the file is created
+                while not os.path.isfile('%s.weights.h5' % snapshot_id):
+                    print("Weights not saved yet!")
+                    time.sleep(1.0)
+                    continue
+
+                try:
+                    copyfile('%s.weights.h5' % snapshot_id,
+                             '%s/incremental/%s_%09d.weights.h5' % (weights_dir, model_name, iter_round))
+                    # copyfile('%s.archive.joblib' % snapshot_id,
+                    #          '%s/archive/%s_%09d.archive.joblib' % (weights_dir, model_name, iter_round))
+
+                    for the_file in os.listdir(weights_dir):
+                        file_path = os.path.join(weights_dir, the_file)
+                        try:
+                            if os.path.isfile(file_path) and model_name in file_path:
+                                os.unlink(file_path)
+                        except:
+                            traceback.print_exc()
+                except:
+                    traceback.print_exc()
 
             iter_round += 1
             print("Stone Elo Rating = {0}".format(elo_rating))
@@ -481,6 +502,7 @@ class Game:
                     pos_to_play[pos.n % 2].append(pos)
                 pos.data['next'] = None
         except:
+            traceback.print_exc()
             if encoding == 'utf-8':
                 return self.gather_positions(filename, encoding='latin1', subsample=16)
 
@@ -512,6 +534,7 @@ class Game:
                 try:
                     c = Position.parse_coord(sc)
                 except:
+                    traceback.print_exc()
                     continue
 
                 if c is not None:
@@ -536,7 +559,7 @@ class Game:
 
                 Position.print(tree.pos)
 
-            tree = tree_search(tree, N_SIMS, output_stream=sys.stdout)
+            tree = tree_search(tree, Constants.N_SIMS, output_stream=sys.stdout)
             if tree.pos.last is None and tree.pos.last2 is None:
                 score = tree.pos.score()
                 if tree.pos.n % 2:
@@ -544,7 +567,7 @@ class Game:
                 print('Game over, score: B%+.1f' % (score,))
                 break
 
-            if float(tree.w) / tree.v < RESIGN_THRES and tree.pos.n > 10:
+            if float(tree.w) / tree.v < Constants.RESIGN_THRES and tree.pos.n > 10:
                 print('I resign.')
                 break
 
@@ -583,7 +606,6 @@ class Game:
                 cmdid = ''
 
             ret = ''
-            owner_map = W * W * [0]
 
             if command[0] == "boardsize":
                 if int(command[1]) != N:
@@ -613,10 +635,10 @@ class Game:
                     else:
                         tree = TreeNode(net=net, pos=tree.pos.pass_move())
             elif command[0] == "genmove":
-                tree = tree_search(tree, N_SIMS, output_stream=sys.stdout)
+                tree = tree_search(tree, Constants.N_SIMS, output_stream=None)
                 if tree.pos.last is None:
                     ret = 'pass'
-                elif float(tree.w) / tree.v < RESIGN_THRES and tree.pos.n > 10:
+                elif float(tree.w) / tree.v < Constants.RESIGN_THRES and tree.pos.n > 10:
                     ret = 'resign'
                 else:
                     ret = Position.str_coord(tree.pos.last)
@@ -635,7 +657,7 @@ class Game:
             elif command[0] == "version":
                 ret = 'goprime parallel hybrid'
             elif command[0] == "tsdebug":
-                Position.print(tree_search(tree, N_SIMS, output_stream=sys.stdout))
+                Position.print(tree_search(tree, Constants.N_SIMS, output_stream=sys.stdout))
             elif command[0] == "list_commands":
                 ret = '\n'.join(known_commands)
             elif command[0] == "known_command":
@@ -649,11 +671,13 @@ class Game:
                 print('Warning: Ignoring unknown command - %s' % (line,), file=sys.stderr)
                 ret = None
 
-            Position.print(tree.pos, sys.stderr, owner_map)
+            # if command[0] in ['genmove', 'play']:
+            #     Position.print(tree.pos, sys.stderr, owner_map)
 
-            if ret is not None:
-                print('=%s %s\n\n' % (cmdid, ret,), end='')
-            else:
-                print('?%s ???\n\n' % (cmdid,), end='')
+            # if ret is not None:
+            #     print('=%s %s\n\n' % (cmdid, ret,), end='')
+            # else:
+            #     print('?%s ???\n\n' % (cmdid,), end='')
 
+            print("= {0}\n".format(ret))
             sys.stdout.flush()

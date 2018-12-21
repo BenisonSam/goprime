@@ -1,11 +1,15 @@
 import datetime
 import logging
 import os
+import shutil
+import sys
 import time
+import traceback
 from multiprocessing import Process, Queue
 from multiprocessing.sharedctypes import Array, Value
 
 import numpy as np
+from psutil import virtual_memory
 
 
 def log(msg, model_name):
@@ -48,7 +52,8 @@ class ModelServer(Process):
             N = self.board_size
             start_time = time.time()
 
-            net = AGZeroModel(N, batch_size=self.batch_size)
+            net = AGZeroModel(N, batch_size=self.batch_size,
+                              archive_fit_samples=int(np.ma.ceil(np.power(N, 3) / 8) * 8))
             self.model_name = net.model_name
             log("Model Server initialized!", self.model_name)
 
@@ -56,7 +61,7 @@ class ModelServer(Process):
 
             if self.load_snapshot is not None:
                 if isinstance(self.load_snapshot, list):
-                    net.load_averaged(self.load_snapshot)
+                    net.load_averaged(self.load_snapshot, log)
                 else:
                     net.load(self.load_snapshot)
                 log("Snapshot loaded!", self.model_name)
@@ -96,11 +101,47 @@ class ModelServer(Process):
             snapshot_id = "weights/{0}_FS".format(self.model_name)
 
             while True and not finished:
-                if time.time() - start_time >= 86000:
-                    net.save("{0}_last".format(snapshot_id))
+
+                if virtual_memory().percent > 85.0:
+                    net.save(snapshot_id=snapshot_id.replace('weights', 'weights/archive'), save_archive=True)
+                    net.reduce_position_archive(ratio=0.2)
+
+                if time.time() - start_time >= 85500:
+                    # save emergency snapshot
+                    snapshot_id = "{0}_last".format(snapshot_id)
+                    net.save(snapshot_id, save_archive=True)
                     log("Emergency snapshot saved before program termination!", self.model_name)
 
-                    # TODO write the code to submit next job here...
+                    # submit the next job
+                    try:
+                        weights_dir = "weights"
+                        archive_dir = os.path.join(weights_dir, "archive")
+
+                        if not os.path.exists(archive_dir):
+                            os.mkdir(archive_dir)
+
+                        # move all the pos archives to archive folder
+                        for file in os.listdir(weights_dir):
+                            if file.endswith(".joblib"):
+                                shutil.move(os.path.join(weights_dir, file), os.path.join(archive_dir, file))
+
+                        content = None
+                        with open("sbatch_goprime.sh") as f:
+                            content = f.read()
+
+                        if content is not None:
+                            content = content.replace('{CWD}', os.getcwd())
+                            content = content.replace('{N}', str(N))
+                            content = content.replace('{SNAPSHOT}', snapshot_id)
+
+                            script = "{0}.sh".format(net.model_name)
+                            with open(script, "w") as f:
+                                f.write(content)
+
+                            os.system("sbatch {0}".format(script))
+                    except:
+                        traceback.print_exc()
+
                     finished = True
                     continue
 
@@ -126,34 +167,37 @@ class ModelServer(Process):
                     fit_counter += 1
                     self.status.value = b'FIT_COMPLETED'
 
-                    if fit_counter != 1 and fit_counter % self.retrain_after == 1:
-                        self.cmd_queue.put(('retrain', {'batch_size': self.batch_size}, 0))
+                    # if fit_counter != 1 and fit_counter % self.retrain_after == 1:
+                    #     self.cmd_queue.put(('retrain', {'batch_size': self.batch_size}, 0))
                 elif cmd == 'retrain':
                     self.status.value = b'RETRAINING'
                     log("Retrain model started...", self.model_name)
 
-                    if args['batch_size'] is not None:
-                        batch_size = int(args['batch_size'])
-                    else:
-                        batch_size = self.batch_size
+                    loaded = True
+                    if 'archive' in args:
+                        loaded = net.load_pos_archive(args['archive'])
 
-                    net.retrain_position_archive(batch_size=batch_size)
-                    if 'snapshot_id' in args:
-                        snapshot_id = "{0}_retrained".format(args['snapshot_id'])
-                    else:
-                        snapshot_id = "{0}_retrained".format(snapshot_id)
+                    if loaded:
+                        if 'batch_size' in args:
+                            batch_size = int(args['batch_size'])
+                        else:
+                            batch_size = self.batch_size
 
-                    net.save(snapshot_id)
-                    finished = True
+                        net.retrain_position_archive(batch_size=batch_size)
+
+                        if 'snapshot_id' in args:
+                            snapshot_id = "{0}_retrained".format(args['snapshot_id'])
+                            net.save(snapshot_id)
 
                     log("Retrain model completed...", self.model_name)
-                    self.status.value = b'READY'
                 elif cmd == 'reduce_position_archive':
                     ratio = 0.5
                     if args['ratio']:
                         ratio = float(args['ratio'])
                     net.reduce_position_archive(ratio=ratio)
                     log("Position Archive reduce request completed!", self.model_name)
+                elif cmd == 'unload_position_archive':
+                    net.unload_pos_archive()
                 elif cmd == 'predict_distribution':
                     stash.add(0, args['X_position'], ri)
                     # log("Predict distribution request completed!")
@@ -167,13 +211,19 @@ class ModelServer(Process):
                     self.status.value = b'SAVING'
                     stash.process()
                     snapshot_id = args['snapshot_id']
-                    net.save(snapshot_id)
+                    save_archive = False if 'archive' not in args else args['archive']
+                    net.save(snapshot_id, save_archive)
                     log("Model save request completed!", self.model_name)
                     self.status.value = b'READY'
+                elif cmd == 'stop_server':
+                    if self.cmd_queue.empty():
+                        self.status.value = b'READY'
+                        finished = True
+
+                sys.stdout.flush()
 
             log("Model Server process completed!", self.model_name)
         except:
-            import traceback
             traceback.print_exc()
 
 
@@ -182,7 +232,7 @@ class GoModel(object):
 
         self.board_size = board_size
         self.cmd_queue = Queue()
-        self.res_queues = [Queue() for i in range(128)]
+        self.res_queues = [Queue() for i in range(256)]
 
         self.status = Array('c', 32)
         self.stash_size = Value('i', 1)
@@ -201,7 +251,6 @@ class GoModel(object):
                 continue
             return True
         except:
-            import traceback
             traceback.print_exc()
             return False
 
@@ -284,5 +333,29 @@ class GoModel(object):
         self.cmd_queue.put(('model_name', {}, self.ri))
         return self.res_queues[self.ri].get()
 
-    def save(self, snapshot_id):
-        self.cmd_queue.put(('save', {'snapshot_id': snapshot_id}, self.ri))
+    def save(self, snapshot_id, save_archive=False):
+        self.cmd_queue.put(('save', {'snapshot_id': snapshot_id, 'archive': save_archive}, self.ri))
+
+    def retrain(self, batch_size, archive=None, save_after=10):
+
+        snapshot = "weights/{0}".format(self.model_name())
+
+        if archive is None:
+            self.cmd_queue.put(('retrain', {'snapshot_id': snapshot, 'batch_size': batch_size}, 0))
+        elif isinstance(archive, list):
+            i = 1
+            for each_archive in archive:
+                self.cmd_queue.put(('retrain', {'batch_size': batch_size, 'archive': each_archive}, 0))
+                self.cmd_queue.put(('unload_position_archive', {}, 0))
+
+                if i % save_after == 0:
+                    self.save("{0}_{1}".format(snapshot, i)),
+
+                i += 1
+
+        snapshot = snapshot if snapshot is not None else self.model_name()
+        self.save(snapshot_id=snapshot)
+
+        self.cmd_queue.put(('stop_server', {}, 0))
+        if self.is_model_ready():
+            pass

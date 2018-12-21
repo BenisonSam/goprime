@@ -11,7 +11,6 @@ import tensorflow as tf
 from tensorflow.contrib.cluster_resolver import TPUClusterResolver
 from tensorflow.keras.callbacks import TensorBoard
 from tensorflow.keras.layers import Activation, BatchNormalization, Conv2D, Dense, Flatten, Input
-# from tensorflow.keras.layers.merge import add
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.python.keras.layers import add
@@ -104,14 +103,15 @@ class AGZeroModel:
                 self.tpu_grpc_url = TPUClusterResolver(tpu=[os.environ[tpu_name_environ_key]]).get_master()
         # TODO write an if condition to validate and resolve the TPU url provided
 
-        self.callback = TensorBoard(log_path)
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-
         self.__loss_functions = ['categorical_crossentropy', 'binary_crossentropy']
 
         self.model_name = time.strftime('GM{0}-%y%m%dT%H%M%S').format('%02d' % N)
-        print(self.model_name)
+        # print(self.model_name)
+
+        log_path = os.path.join(log_path, self.model_name)
+        if not os.path.exists(log_path):
+            os.makedirs(log_path)
+        self.callback = TensorBoard(log_path)
 
     def create(self):
         bn_axis = 3
@@ -140,21 +140,14 @@ class AGZeroModel:
 
         self.callback.set_model(self.model)
 
-        self.model.summary()
-
         # check if TPU available
         if self.tpu_grpc_url is not None:
-            tpu_model = tf.contrib.tpu.keras_to_tpu_model(
+            self.model = tf.contrib.tpu.keras_to_tpu_model(
                 self.model,
                 strategy=tf.contrib.tpu.TPUDistributionStrategy(
-                    tf.contrib.cluster_resolver.TPUClusterResolver(tpu=self.tpu_grpc_url)
-                )
-            )
-            tpu_model.compile(
-                optimizer=tf.train.AdamOptimizer(learning_rate=2e-2),
-                loss=self.__loss_functions
-            )
-            self.model = tpu_model
+                    tf.contrib.cluster_resolver.TPUClusterResolver(self.tpu_grpc_url)))
+
+        self.model.summary()
 
     def fit_game(self, X_positions, result):
         X_posres = []
@@ -163,13 +156,13 @@ class AGZeroModel:
             X_posres.append((pos, dist, result))
             result = -result
 
-        self.position_archive.extend(X_posres)
-
         if len(self.position_archive) >= self.archive_fit_samples:
             archive_samples = random.sample(self.position_archive, self.archive_fit_samples)
         else:
             # initial case
             archive_samples = self.position_archive
+
+        self.position_archive.extend(X_posres)
 
         # I'm going to some lengths to avoid the potentially overloaded + operator
         X_fit_samples = list(itertools.chain(X_posres, archive_samples))
@@ -205,17 +198,6 @@ class AGZeroModel:
             batch_no += 1
             X, y_dist, y_res = [], [], []
 
-        # for pos, dist, res in X_shuffled:
-        #     X.append(pos)
-        #     y_dist.append(dist)
-        #     y_res.append(float(res) / 2 + 0.5)
-        #     if len(X) % self.batch_size == 0:
-        #         self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
-        #         X, y_dist, y_res = [], [], []
-        #
-        # if len(X) > 0:
-        #     self.model.train_on_batch(np.array(X), [np.array(y_dist), np.array(y_res)])
-
     def write_log(self, names, logs, batch_no):
         for name, value in zip(names, logs):
             summary = tf.Summary()
@@ -232,9 +214,10 @@ class AGZeroModel:
         res = np.array([r[0] * 2 - 1 for r in res])
         return [dist, res]
 
-    def save(self, snapshot_id):
+    def save(self, snapshot_id, save_archive=False):
         self.model.save_weights('%s.weights.h5' % (snapshot_id,))
-        joblib.dump(self.position_archive, '%s.archive.joblib' % (snapshot_id,), compress=5)
+        if save_archive:
+            joblib.dump(self.position_archive, '%s.archive.joblib' % (snapshot_id,), compress=5)
 
     def load(self, snapshot_id):
         self.model.load_weights('%s.weights.h5' % (snapshot_id,))
@@ -245,7 +228,22 @@ class AGZeroModel:
         except:
             print('Warning: Could not load position archive %s' % (pos_fname,))
 
-    def load_averaged(self, weights):
+    def unload_pos_archive(self):
+        self.position_archive = []
+
+    def load_pos_archive(self, archive_file):
+        try:
+            print('Attempting to load position archive %s' % (archive_file,))
+            self.position_archive = joblib.load(archive_file)
+            print('Successfully loaded position archive %s' % (archive_file,))
+            return True
+        except:
+            import traceback
+            traceback.print_exc()
+            print('Warning: Could not load position archive %s' % (archive_file,))
+            return False
+
+    def load_averaged(self, weights, log=None):
         new_weights = []
         loaded_weights = []
 
@@ -253,6 +251,8 @@ class AGZeroModel:
             self.model.load_weights(weight)
             loaded_weights.append(self.model.get_weights())
             print("Read weight: {0}".format(weight))
+            if log is not None:
+                log("Read weight: {0}".format(weight), self.model_name)
 
         if len(loaded_weights) > 0:
             for weights_list_tuple in zip(*loaded_weights):

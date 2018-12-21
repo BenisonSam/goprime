@@ -15,7 +15,7 @@ class Board(object):
     komi = 7.5
 
     def __init__(self):
-        raise TypeError("Board: Static class object not allowed to be created!")
+        raise TypeError("Board: Is a Static class. Object not allowed to be created!")
 
     @static_property
     def N(self):
@@ -44,6 +44,23 @@ class Board(object):
     def empty(self):
         N = Board.__N
         return "\n".join([(N + 1) * ' '] + N * [' ' + N * '.'] + [(N + 2) * ' '])
+
+    @static_property
+    def contact_res(self):
+        W = Board.__W
+
+        # Regex that matches various kind of points adjacent to '#' (flood filled) points
+        contact_res = dict()
+
+        for p in ['.', 'x', 'X']:
+            rp = '\\.' if p == '.' else p
+            contact_res_src = ['#' + rp,  # p at right
+                               rp + '#',  # p at left
+                               '#' + '.' * (W - 1) + rp,  # p below
+                               rp + '.' * (W - 1) + '#']  # p above
+            contact_res[p] = re.compile('|'.join(contact_res_src), flags=re.DOTALL)
+
+        return contact_res
 
     @staticmethod
     def neighbors(c):
@@ -81,23 +98,6 @@ class Board(object):
                     fringe.append(d)
 
         return byte_board.decode('utf-8')
-
-    @static_property
-    def contact_res(self):
-        W = Board.__W
-
-        # Regex that matches various kind of points adjacent to '#' (flood filled) points
-        contact_res = dict()
-
-        for p in ['.', 'x', 'X']:
-            rp = '\\.' if p == '.' else p
-            contact_res_src = ['#' + rp,  # p at right
-                               rp + '#',  # p at left
-                               '#' + '.' * (W - 1) + rp,  # p below
-                               rp + '.' * (W - 1) + '#']  # p above
-            contact_res[p] = re.compile('|'.join(contact_res_src), flags=re.DOTALL)
-
-        return contact_res
 
     @staticmethod
     def contact(board, p):

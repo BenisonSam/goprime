@@ -1,17 +1,20 @@
-import multiprocessing
+#! /media/benisonsam/WORKSPACE/MyUbuntu/anaconda3/envs/ismll/bin/python
+import math
 import os
+import random
 import sys
 import time
 from enum import Enum
 from pprint import pprint
 
 from goprime import *
-from goprime.board import Position
+from goprime.board import Position, Board
 from goprime.game import Game
 from goprime.mcts import TreeNode, tree_search
 from goprime.model import GoModel
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 
@@ -22,16 +25,18 @@ class ConsoleParams(Enum):
     BatchRange = 4
     DataSet = 5
     Games = 6
+    Archive = 7
 
 
-console_options = ["-n", "-m", "-s", "-b", "-d", "-g"]
+console_options = ["-n", "-m", "-s", "-b", "-d", "-g", "-a"]
 options_lookup = {
     "-n": ConsoleParams.N,
     "-m": ConsoleParams.Mode,
     "-s": ConsoleParams.Snapshot,
     "-b": ConsoleParams.BatchRange,
     "-d": ConsoleParams.DataSet,
-    "-g": ConsoleParams.Games
+    "-g": ConsoleParams.Games,
+    "-a": ConsoleParams.Archive
 }
 options_type = {
     "-n": int,
@@ -39,7 +44,8 @@ options_type = {
     "-s": str,
     "-b": "range",
     "-d": "path",
-    "-g": int
+    "-g": int,
+    "-a": str
 }
 
 
@@ -63,7 +69,7 @@ def validate_option(option, value):
 
 
 def read_console_params():
-    params = sys.argv
+    args = sys.argv
     arg_values = {
         ConsoleParams.N: 19,
         ConsoleParams.Mode: "selfplay",
@@ -72,20 +78,20 @@ def read_console_params():
         ConsoleParams.DataSet: None
     }
 
-    i = 1
+    j = 1
     while True:
-        param = params[i].strip()
+        param = args[j].strip()
 
-        if param in console_options and i + 1 < len(params):
-            value = params[i + 1].strip()
+        if param in console_options and j + 1 < len(args):
+            value = args[j + 1].strip()
 
             if value in console_options:
                 raise ValueError("No value found for option {0}.".format(param))
             else:
                 arg_values[options_lookup[param]] = validate_option(param, value)
 
-        i += 2
-        if i == len(params):
+        j += 2
+        if j == len(args):
             break
 
     return arg_values
@@ -99,6 +105,9 @@ if __name__ == "__main__":
 
     N = int(params[ConsoleParams.N])
     W = N + 2
+    Constants.N_SIMS = int((Constants.N_SIMS * N) / 1520) * 80
+    Constants.REPORT_PERIOD = int(Constants.N_SIMS / 4)
+    Board.komi = math.floor((N * Board.komi * 10) / (19 * 5)) * 0.5
 
     snapshot = params[ConsoleParams.Snapshot]
     # weighted average initialization
@@ -106,14 +115,18 @@ if __name__ == "__main__":
         dir_path = snapshot.strip('~ /')
         snapshot = []
 
+        if not os.path.exists(dir_path):
+            dir_path = "/" + dir_path
+
         for item in os.listdir(dir_path):
             w_snap = os.path.join(dir_path, item)
             if os.path.isfile(w_snap) and w_snap.endswith(".h5"):
                 snapshot.append(w_snap)
 
-    batch_size = 32
+    batch_size = int(math.ceil((19 - N + 1) * 0.21) * 32)  # perfectly calibrated for GTX10 Ti Series
     net = GoModel(board_size=N, batch_size=batch_size, load_snapshot=snapshot)
 
+    print("Waiting for Model Server initialization ...")
     if net.is_model_ready():
 
         net.set_waiting_status()
@@ -133,21 +146,42 @@ if __name__ == "__main__":
         elif mode == "gtp":
             game.gtp_io(net)
         elif mode == "tsbenchmark":
+            import multiprocessing
+
             t_start = time.time()
 
             Position.print(tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
-                                       N_SIMS, W * W * [0]).pos)
+                                       Constants.N_SIMS, W * W * [0]).pos)
 
             print('Tree search with %d playouts took %.3fs with %d threads; speed is %.3f playouts/thread/s' %
-                  (N_SIMS, time.time() - t_start, multiprocessing.cpu_count(),
-                   N_SIMS / ((time.time() - t_start) * multiprocessing.cpu_count())))
+                  (Constants.N_SIMS, time.time() - t_start, multiprocessing.cpu_count(),
+                   Constants.N_SIMS / ((time.time() - t_start) * multiprocessing.cpu_count())))
         elif mode == "tsdebug":
             Position.print(tree_search(TreeNode(net=net, pos=Position.empty_position(N)),
-                                       N_SIMS, output_stream=sys.stdout).pos)
+                                       Constants.N_SIMS, output_stream=sys.stdout).pos)
         elif mode == "retrain":
-            net.cmd_queue.put(('retrain', {'snapshot_id': snapshot, 'batch_size': batch_size}, 0))
-            if net.is_model_ready():
-                pass
+            archive = None if ConsoleParams.Archive not in params else params[ConsoleParams.Archive]
+
+            shuffled_archive = []
+            if archive is not None:
+                dir_path = archive.strip(' /')
+                archive = []
+
+                if not os.path.exists(dir_path):
+                    dir_path = "/" + dir_path
+
+                for item in os.listdir(dir_path):
+                    w_arch = os.path.join(dir_path, item)
+                    if os.path.isfile(w_arch) and w_arch.endswith(".joblib"):
+                        archive.append(w_arch)
+
+                for i in range(2):
+                    random.shuffle(archive)
+                    shuffled_archive += archive
+
+            save_after = game.game_limit_factor(N)
+            save_after = save_after if save_after <= len(shuffled_archive) else len(shuffled_archive)
+            net.retrain(batch_size, shuffled_archive, save_after)
         elif mode == "selfplay":
             if ConsoleParams.Games in params:
                 games = params[ConsoleParams.Games]
@@ -170,8 +204,4 @@ if __name__ == "__main__":
     net.server.terminate()
     net.server.join()
 
-    # TODO File with last file id
-    # TODO Submit next job based on the last id
     # TODO Write code for self play cum supervised
-    # TODO Elo rating
-    # TODO GTP IO

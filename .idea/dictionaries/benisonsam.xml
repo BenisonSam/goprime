@@ -2,14 +2,19 @@
   <dictionary name="benisonsam">
     <words>
       <w>batcher</w>
+      <w>benisonsam</w>
       <w>crossentropy</w>
       <w>dataset</w>
       <w>disp</w>
       <w>distnext</w>
+      <w>envs</w>
       <w>gpus</w>
       <w>grpc</w>
+      <w>ismll</w>
       <w>joblib</w>
+      <w>komi</w>
       <w>nvidia</w>
+      <w>parallelization</w>
       <w>pythonioencoding</w>
       <w>relu</w>
       <w>selfplay</w>

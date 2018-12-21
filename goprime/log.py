@@ -1,13 +1,19 @@
 """Simple example on how to log scalars and images to tensorboard without tensor ops.
-License: Copyleft
 """
-__author__ = "Michael Gygli"
-
+from enum import Enum
 from io import StringIO
+from multiprocessing import Lock
 
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+
+_sync_log_lock = Lock()
+
+
+class Log(Enum):
+    Scalar = 0
+    Images = 1
+    Histogram = 2
 
 
 class TBLogger(object):
@@ -16,6 +22,28 @@ class TBLogger(object):
     def __init__(self, log_dir):
         """Creates a summary writer logging to log_dir."""
         self.writer = tf.summary.FileWriter(log_dir)
+        self.__sessions = {}
+
+    def log(self, log, session_id, tag, value, **args):
+        _sync_log_lock.acquire()
+        try:
+            if session_id in self.__sessions:
+                self.__sessions[session_id] += 1
+            else:
+                self.__sessions[session_id] = 0
+
+            step = self.__sessions[session_id]
+            if log == Log.Scalar:
+                self.log_scalar(tag=tag, value=value, step=step)
+            elif log == Log.Images:
+                self.log_images(tag=tag, images=value, step=step)
+            elif log == Log.Histogram:
+                self.log_histogram(tag=tag, values=value, step=step, bins=1000 if 'bins' not in args else args['bins'])
+        except:
+            import traceback
+            traceback.print_exc()
+        finally:
+            _sync_log_lock.release()
 
     def log_scalar(self, tag, value, step):
         """Log a scalar variable.
@@ -32,6 +60,7 @@ class TBLogger(object):
 
     def log_images(self, tag, images, step):
         """Logs a list of images."""
+        import matplotlib.pyplot as plt
 
         im_summaries = []
         for nr, img in enumerate(images):
